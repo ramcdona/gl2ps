@@ -310,6 +310,8 @@ determine the way primitives are handled:
   \dd{GL_RGBA} if this option is enabled. If these restrictions are
   not met, a runtime error will be reported and \dd{gl2psBeginPage} /
   \dd{gl2psSetOptions} will return \dd{GL2PS_ERROR}.
+\item[\dd{GL2PS_NO_TEX_FONTSIZE}] No fontsize specification is added in the
+  \LaTeX\ output.
 \end{description}
 
 \item[\dd{colormode}] Specifies the color mode: \dd{GL_RGBA} or
@@ -1126,6 +1128,7 @@ anymore.
 \item[1.4.1] Added \dd{gl2psSorting} to change the sorting algorithm on the fly;
   fix rotated text in PGF output; use \dd{pt} instead of \dd{px} in SVG
   viewport.
+\item[1.x.x] New \dd{GL2PS_NO_TEX_FONTSIZE} option.
 \end{description}
 
 \end{document}
