@@ -1,6 +1,6 @@
 %
 %  GL2PS, an OpenGL to PostScript Printing Library
-%  Copyright (C) 1999-2017 C. Geuzaine
+%  Copyright (C) 1999-2020 C. Geuzaine
 %
 %  This program is free software; you can redistribute it and/or
 %  modify it under the terms of either:
@@ -148,10 +148,6 @@ under certain conditions) for static linking with closed-source software
 (see \href{http://www.geuz.org/gl2ps/COPYING.GL2PS}{COPYING.GL2PS}). Any
 corrections, questions or suggestions should be e-mailed to the GL2PS
 mailing list \email{gl2ps@geuz.org}{gl2ps@geuz.org}.
-
-The interface consists of seventeen functions, all beginning with the
-prefix \dd{gl2ps}. All the data structures and the symbolic constants
-peculiar to GL2PS begin with \dd{GL2PS}.
 
 \section{Usage}
 
@@ -1125,10 +1121,10 @@ anymore.
   \dd{gl2psBeginPage} now accepts a buffersize of 0; new
   \dd{gl2psForceRasterPos}, \dd{gl2psLineCap} and \dd{gl2psLineJoin}; fixed
   scaling of images in PDF output; fixed bug leading to corrupted PDF output.
-\item[1.4.1] Added \dd{gl2psSorting} to change the sorting algorithm on the fly;
-  fix rotated text in PGF output; use \dd{pt} instead of \dd{px} in SVG
-  viewport.
-\item[1.x.x] New \dd{GL2PS_NO_TEX_FONTSIZE} option.
+\item[1.4.1] (Apr 1, 2020) Added \dd{gl2psSorting} to change the sorting
+  algorithm on the fly; fix rotated text in PGF output; use \dd{pt} instead of
+  \dd{px} in SVG viewport; new \dd{GL2PS_NO_TEX_FONTSIZE} option and
+  dd{gl2psSetTexScaling} function to control \LaTeX\ scaling.
 \end{description}
 
 \end{document}
