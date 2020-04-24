@@ -155,7 +155,7 @@ if(OPENGL_FOUND)
                         ARCHIVE DESTINATION lib${LIB_SUFFIX})
 endif()
 
-if(WIN32)
+if(CMAKE_HOST_SYSTEM MATCHES Windows)
   set(GL2PS_DOC .)
 else()
   set(GL2PS_DOC share/doc/gl2ps)
