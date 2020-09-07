@@ -26,7 +26,7 @@
  * file named "COPYING.GL2PS"; if not, I will be glad to provide one.
  *
  * For the latest info about gl2ps and a full list of contributors, see
- * http://www.geuz.org/gl2ps/.
+ * https://geuz.org/gl2ps/.
  *
  * Please report all issues on https://gitlab.onelab.info/gl2ps/gl2ps/issues.
  */
