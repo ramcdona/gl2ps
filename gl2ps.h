@@ -139,6 +139,7 @@
 #define GL2PS_TIGHT_BOUNDING_BOX   (1<<12)
 #define GL2PS_NO_OPENGL_CONTEXT    (1<<13)
 #define GL2PS_NO_TEX_FONTSIZE      (1<<14)
+#define GL2PS_SQUARE_POINTS        (1<<15)
 
 /* Arguments for gl2psEnable/gl2psDisable */
 
