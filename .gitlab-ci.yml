@@ -34,7 +34,7 @@ windows64_msvc:
     - msbuild package.vcxproj
   tags:
     - windows64
-    - official
+    - shared
 
 # ----------------------------------------------
 # Official source snapshots (master branch only)
