@@ -542,6 +542,9 @@ void writefile(int format, int sort, int options, int nbcol,
 
 void keyboard(unsigned char key, int x, int y)
 {
+  (void)x;
+  (void)y;
+
   int opt;
   char ext[32];
   static int format = GL2PS_PS;
@@ -612,6 +615,9 @@ void keyboard(unsigned char key, int x, int y)
 
 void motion(int x, int y)
 {
+  (void)x;
+  (void)y;
+
   rotation += 10.;
   display();
 }
