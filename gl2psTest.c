@@ -131,7 +131,7 @@ static const char *pixmap[] = {
   "*..............................................................*",
   "****************************************************************"};
 
-void triangles()
+void triangles(void)
 {
   /* two intersecting triangles */
   glBegin(GL_TRIANGLES);
@@ -153,7 +153,7 @@ void triangles()
   glEnd();
 }
 
-void extras()
+void extras(void)
 {
   glColor3f(1., 0., 0.);
 
@@ -222,7 +222,7 @@ void extras()
   gl2psLineWidth(1);
 }
 
-void objects()
+void objects(void)
 {
   glPushMatrix();
   glEnable(GL_LIGHTING);
@@ -255,7 +255,7 @@ void printstring(const char *string, float angle)
     glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, string[i]);
 }
 
-void text()
+void text(void)
 {
   double x = -1.25, y = -0.33, dy = 0.13;
 
@@ -294,7 +294,7 @@ void text()
   gl2psSpecial(GL2PS_TEX, "% This should only be printed in LaTeX output!");
 }
 
-void cube()
+void cube(void)
 {
   glColor3d (0.0,1.0,0.);
   glBegin(GL_POLYGON);
@@ -384,7 +384,7 @@ void image(float x, float y, GLboolean opaque)
 }
 
 /* A simple drawing function, using the default viewport */
-void draw_single()
+void draw_single(void)
 {
   glScissor(0, 0, window_w, window_h);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -396,7 +396,7 @@ void draw_single()
 }
 
 /* A more complex drawing function, using 2 separate viewports */
-void draw_multi()
+void draw_multi(void)
 {
   GLint viewport[4];
 
@@ -456,7 +456,7 @@ void draw_multi()
   glFlush();
 }
 
-void display()
+void display(void)
 {
   GLfloat spec[4] = {0.6, 0.6, 0.6, 1.0};
   glEnable(GL_DEPTH_TEST);
