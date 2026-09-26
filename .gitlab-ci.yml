@@ -52,7 +52,7 @@ source_official:
     - make
     - make package_source
     - PKG=`ls gl2ps-*.tar*`
-    - scp ${PKG} geuzaine@geuz.org:.www/gl2ps/src/${PKG/\.tar\.gz/\.tgz}
+    - scp ${PKG} geuzaine@gmsh.info:.www/gl2ps/src/${PKG/\.tar\.gz/\.tgz}
   tags:
     - linux64
     - docker
