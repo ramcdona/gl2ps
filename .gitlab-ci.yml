@@ -20,7 +20,7 @@ linux64_docker:
   script:
     - mkdir build
     - cd build
-    - cmake -DGL2PS_EXTRA_VERSION=${EXTRA_VERSION:0:13} ..
+    - cmake ..
     - make -j 4
   tags:
     - linux64
@@ -30,7 +30,7 @@ windows64_msvc:
   script:
     - md build
     - cd build
-    - cmake -DGL2PS_EXTRA_VERSION=%EXTRA_VERSION:~0,13% ..
+    - cmake ..
     - cmake --build . --target package
   tags:
     - windows64
