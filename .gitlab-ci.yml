@@ -1,5 +1,5 @@
 #  GL2PS, an OpenGL to PostScript Printing Library
-#  Copyright (C) 1999-2017 C. Geuzaine
+#  Copyright (C) 1999-2026 C. Geuzaine
 
 variables:
   EXTRA_VERSION: "-git-$CI_COMMIT_SHA"
@@ -61,7 +61,7 @@ source_official:
 # Official source releases (master branch only)
 # ----------------------------------------------
 
-source_official:
+source_release:
   image: onelab/ci
   only:
     - master@gl2ps/gl2ps
