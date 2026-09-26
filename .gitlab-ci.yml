@@ -56,3 +56,5 @@ source_official:
   tags:
     - linux64
     - docker
+  only:
+    - /^gl2ps_.*$/
