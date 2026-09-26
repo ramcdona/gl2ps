@@ -56,5 +56,26 @@ source_official:
   tags:
     - linux64
     - docker
+
+# ----------------------------------------------
+# Official source releases (master branch only)
+# ----------------------------------------------
+
+source_official:
+  image: onelab/ci
+  only:
+    - master@gl2ps/gl2ps
+  <<: *ssh_config
+  script:
+    - mkdir build
+    - cd build
+    - cmake ..
+    - make
+    - make package_source
+    - PKG=`ls gl2ps-*.tar*`
+    - scp ${PKG} geuzaine@gmsh.info:.www/gl2ps/src/${PKG/\.tar\.gz/\.tgz}
+  tags:
+    - linux64
+    - docker
   only:
     - /^gl2ps_.*$/
