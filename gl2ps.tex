@@ -962,7 +962,10 @@ bug fix, \dd{gl2psLineCap}, \dd{gl2psLineJoin} and  \dd{gl2psSorting};
 %
 \noemail{Dan Lipsa}{dan.lipsa@kitware.com} for bug fixes in PDF output;
 %
-\noemail{Ion Vasilief}{ion_vasilief@yahoo.fr} for square points output.
+\noemail{Ion Vasilief}{ion_vasilief@yahoo.fr} for square points output;
+%
+Dmitri A. Sergatskov and Dominik Mierzejewski for hardening SVG output against
+bad input.
 
 \section{Links}
 \label{sec:links}
@@ -1123,8 +1126,9 @@ anymore.
   \dd{gl2psSetTexScaling} function to control \LaTeX\ scaling.
 \item[1.4.2] (Apr 7, 2020) Revert dynamic library naming change inadvertently
   introduced in 1.4.1.
-\item[1.4.3] (work-in-progress) Clamp RGBA values in PDF export (fixes overflow
-  with some Linux OpenGL drivers).
+\item[1.4.3] (Sep 26, 2026) new \dd{GL2PS_SQUARE_POINTS} option; clamp RGBA
+  values in PDF export (fixes overflow with some Linux OpenGL drivers);
+  hardening SVG against bad input.
 \end{description}
 
 \end{document}

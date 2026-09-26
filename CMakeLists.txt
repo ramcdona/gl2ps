@@ -28,7 +28,7 @@
 #
 #  Please report all issues on https://gitlab.onelab.info/gl2ps/gl2ps/issues.
 
-cmake_minimum_required(VERSION 2.8 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 
 # do not warn about non-definition of WIN32 on Cygwin
 set(CMAKE_LEGACY_CYGWIN_WIN32 0)
