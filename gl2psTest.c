@@ -63,6 +63,7 @@ static GLsizei window_h = 0;
 static GLboolean display_multi = GL_TRUE;
 static GLboolean blend = GL_FALSE;
 static GLboolean teapot = GL_FALSE;
+static GLboolean wireframe = GL_FALSE;
 static const char *pixmap[] = {
   "****************************************************************",
   "*..............................................................*",
@@ -228,13 +229,32 @@ void objects(void)
   glEnable(GL_LIGHTING);
   glRotatef(rotation, 2., 0., 1.);
   glColor4d(0.2, 0.2, 0.9, 0.2);
+  if(wireframe){
+    /* push the surface back so that its wireframe stays in front */
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1., 1.);
+    gl2psEnable(GL2PS_POLYGON_OFFSET_FILL);
+  }
   if(teapot == GL_TRUE){
     glutSolidTeapot(0.7);
   }
   else{
     glutSolidTorus(0.3, 0.6, 20, 20);
   }
+  if(wireframe){
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    gl2psDisable(GL2PS_POLYGON_OFFSET_FILL);
+  }
   glDisable(GL_LIGHTING);
+  if(wireframe){
+    glColor3f(0., 0., 0.);
+    if(teapot == GL_TRUE){
+      glutWireTeapot(0.7);
+    }
+    else{
+      glutWireTorus(0.3, 0.6, 20, 20);
+    }
+  }
   glPopMatrix();
 }
 
@@ -257,7 +277,7 @@ void printstring(const char *string, float angle)
 
 void text(void)
 {
-  double x = -1.25, y = -0.33, dy = 0.13;
+  double x = -1.25, y = -0.33, dy = 0.12;
 
   glColor3f(1., 1., 0.);
 
@@ -272,6 +292,9 @@ void text(void)
   y -= dy;
   glRasterPos2d(x, y);
   printstring("  t: to alternate between teapot and torus", 0.);
+  y -= dy;
+  glRasterPos2d(x, y);
+  printstring("  w: to draw the wireframe of the teapot or torus", 0.);
   y -= dy;
   glRasterPos2d(x, y);
   printstring("  v: to alternate between single and multiple viewport modes", 0.);
@@ -570,6 +593,10 @@ void keyboard(unsigned char key, int x, int y)
     break;
   case 'b':
     blend = !blend;
+    display();
+    break;
+  case 'w':
+    wireframe = !wireframe;
     display();
     break;
   case 'v':
