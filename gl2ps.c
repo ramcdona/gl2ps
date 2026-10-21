@@ -234,6 +234,12 @@ typedef struct {
 
   /* for TEX scaling */
   GLfloat tex_scaling;
+
+  /* the kind of the open SVG path run, 0 for none, its style, and where
+     its last line ended */
+  int svgrun;
+  char svgstyle[256];
+  GL2PSxyz svgend;
 } GL2PScontext;
 
 typedef struct {
@@ -5268,6 +5274,29 @@ static void gl2psPrintSVGHeader(void)
   gl2psPrintf("<g>\n");
 }
 
+static void gl2psSVGEndRun(void)
+{
+  if(gl2ps->svgrun){
+    gl2psPrintf("\"/>\n");
+    gl2ps->svgrun = 0;
+  }
+}
+
+/* Primitives of one kind and style in a row are written as one path, a
+   run: continues the open run when it has this kind and style, or
+   starts a new one; returns 1 for a new one */
+static int gl2psSVGBeginRun(int kind, const char *style)
+{
+  if(gl2ps->svgrun == kind && !strcmp(gl2ps->svgstyle, style))
+    return 0;
+  gl2psSVGEndRun();
+  gl2psPrintf("<path %sd=\"", style);
+  gl2ps->svgrun = kind;
+  strncpy(gl2ps->svgstyle, style, sizeof(gl2ps->svgstyle) - 1);
+  gl2ps->svgstyle[sizeof(gl2ps->svgstyle) - 1] = '\0';
+  return 1;
+}
+
 static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
 {
   char col[32];
@@ -5352,34 +5381,80 @@ static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
   }
 }
 
-static void gl2psPrintSVGDash(GLushort pattern, GLint factor)
+/* The stroke-dasharray attribute of a stipple, empty for a solid line */
+static void gl2psSVGDashString(GLushort pattern, GLint factor, char *str)
 {
   int i, n, array[10];
 
+  str[0] = '\0';
   if(!pattern || !factor) return; /* solid line */
 
   gl2psParseStipplePattern(pattern, factor, &n, array);
-  gl2psPrintf("stroke-dasharray=\"");
+  str += sprintf(str, "stroke-dasharray=\"");
   for(i = 0; i < n; i++){
-    if(i) gl2psPrintf(",");
-    gl2psPrintf("%d", array[i]);
+    if(i) str += sprintf(str, ",");
+    str += sprintf(str, "%d", array[i]);
   }
-  gl2psPrintf("\" ");
+  sprintf(str, "\" ");
 }
 
-static void gl2psEndSVGLine(void)
+/* A line, in the run of its style; it continues the path when it starts
+   where the last ended */
+static void gl2psSVGLine(GL2PSprimitive *prim, GL2PSxyz xyz[2], GL2PSrgba rgba)
 {
-  int i;
-  if(gl2ps->lastvertex.rgba[0] >= 0.){
-    gl2psPrintPair(gl2psStrokeFixed(gl2ps->lastvertex.xyz[0]),
-                      gl2psStrokeFixed(gl2ps->viewport[3] -
-                                          gl2ps->lastvertex.xyz[1]), 0);
-    gl2psPrintf("\"/>\n");
-    for(i = 0; i < 3; i++)
-      gl2ps->lastvertex.xyz[i] = -1.;
-    for(i = 0; i < 4; i++)
-      gl2ps->lastvertex.rgba[i] = -1.;
+  char col[32], lcap[7], ljoin[7], dash[160], opacity[32], style[512];
+  long x0, y0, x1, y1;
+  int newrun;
+
+  gl2psSVGGetColorString(rgba, col);
+  switch (prim->linecap){
+  case GL2PS_LINE_CAP_ROUND:
+    sprintf (lcap, "%s", "round");
+    break;
+  case GL2PS_LINE_CAP_SQUARE:
+    sprintf (lcap, "%s", "square");
+    break;
+  case GL2PS_LINE_CAP_BUTT:
+  default:
+    sprintf (lcap, "%s", "butt");
+    break;
   }
+  switch (prim->linejoin){
+  case GL2PS_LINE_JOIN_ROUND:
+    sprintf (ljoin, "%s", "round");
+    break;
+  case GL2PS_LINE_JOIN_BEVEL:
+    sprintf (ljoin, "%s", "bevel");
+    break;
+  case GL2PS_LINE_JOIN_MITER:
+  default:
+    sprintf (ljoin, "%s", "miter");
+    break;
+  }
+  opacity[0] = '\0';
+  if(rgba[3] < 1.0F) sprintf(opacity, "stroke-opacity=\"%g\" ", rgba[3]);
+  gl2psSVGDashString(prim->pattern, prim->factor, dash);
+  sprintf(style, "fill=\"none\" stroke=\"%s\" stroke-width=\"%g\" "
+          "stroke-linecap=\"%s\" stroke-linejoin=\"%s\" %s%s",
+          col, prim->width, lcap, ljoin, opacity, dash);
+
+  x0 = gl2psStrokeFixed(xyz[0][0]); y0 = gl2psStrokeFixed(xyz[0][1]);
+  x1 = gl2psStrokeFixed(xyz[1][0]); y1 = gl2psStrokeFixed(xyz[1][1]);
+
+  /* separate transparent lines blend where they cross, so each chain of
+     them is a path of its own, where a run would stroke them once */
+  if(rgba[3] < 1.0F &&
+     !(gl2ps->svgrun == 2 && gl2psSamePosition(gl2ps->svgend,
+                                               prim->verts[0].xyz)))
+    gl2psSVGEndRun();
+  newrun = gl2psSVGBeginRun(2, style);
+  if(newrun || !gl2psSamePosition(gl2ps->svgend, prim->verts[0].xyz)){
+    gl2psPrintf("M");
+    gl2psPrintPair(x0, y0, 1);
+  }
+  gl2psPrintf("L");
+  gl2psPrintPair(x1, y1, 1);
+  memcpy(gl2ps->svgend, prim->verts[1].xyz, sizeof(GL2PSxyz));
 }
 
 static void gl2psPrintSVGPixmap(GLfloat x, GLfloat y, GL2PSimage *pixmap)
@@ -5427,17 +5502,13 @@ static void gl2psPrintSVGPrimitive(void *data)
   GL2PSxyz xyz[4];
   GL2PSrgba rgba[4];
   char col[32];
-  char lcap[7], ljoin[7];
-  int newline;
 
   prim = *(GL2PSprimitive**)data;
 
   if((gl2ps->options & GL2PS_OCCLUSION_CULL) && prim->culled) return;
 
-  /* We try to draw connected lines as a single path to get nice line
-     joins and correct stippling. So if the primitive to print is not
-     a line we must first finish the current line (if any): */
-  if(prim->type != GL2PS_LINE) gl2psEndSVGLine();
+  /* Lines go into path runs; anything else ends the run */
+  if(prim->type != GL2PS_LINE) gl2psSVGEndRun();
 
   gl2psSVGGetCoordsAndColors(prim->numverts, prim->verts, xyz, rgba);
 
@@ -5459,68 +5530,7 @@ static void gl2psPrintSVGPrimitive(void *data)
     }
     break;
   case GL2PS_LINE :
-    if(!gl2psSamePosition(gl2ps->lastvertex.xyz, prim->verts[0].xyz) ||
-       !gl2psSameColor(gl2ps->lastrgba, prim->verts[0].rgba) ||
-       gl2ps->lastlinewidth != prim->width ||
-       gl2ps->lastlinecap != prim->linecap ||
-       gl2ps->lastlinejoin != prim->linejoin ||
-       gl2ps->lastpattern != prim->pattern ||
-       gl2ps->lastfactor != prim->factor){
-      /* End the current line if the new segment does not start where
-         the last one ended, or if the color, the width or the
-         stippling have changed (we will need to use multi-point
-         gradients for smooth-shaded lines) */
-      gl2psEndSVGLine();
-      newline = 1;
-    }
-    else{
-      newline = 0;
-    }
-    gl2ps->lastvertex = prim->verts[1];
-    gl2psSetLastColor(prim->verts[0].rgba);
-    gl2ps->lastlinewidth = prim->width;
-    gl2ps->lastlinecap = prim->linecap;
-    gl2ps->lastlinejoin = prim->linejoin;
-    gl2ps->lastpattern = prim->pattern;
-    gl2ps->lastfactor = prim->factor;
-    if(newline){
-      gl2psSVGGetColorString(rgba[0], col);
-      gl2psPrintf("<polyline fill=\"none\" stroke=\"%s\" stroke-width=\"%g\" ",
-                  col, prim->width);
-      switch (prim->linecap){
-      case GL2PS_LINE_CAP_BUTT:
-        sprintf (lcap, "%s", "butt");
-        break;
-      case GL2PS_LINE_CAP_ROUND:
-        sprintf (lcap, "%s", "round");
-        break;
-      case GL2PS_LINE_CAP_SQUARE:
-        sprintf (lcap, "%s", "square");
-        break;
-      }
-      switch (prim->linejoin){
-      case GL2PS_LINE_JOIN_MITER:
-        sprintf (ljoin, "%s", "miter");
-        break;
-      case GL2PS_LINE_JOIN_ROUND:
-        sprintf (ljoin, "%s", "round");
-        break;
-      case GL2PS_LINE_JOIN_BEVEL:
-        sprintf (ljoin, "%s", "bevel");
-        break;
-      }
-      gl2psPrintf("stroke-linecap=\"%s\" stroke-linejoin=\"%s\" ",
-                  lcap, ljoin);
-      if(rgba[0][3] < 1.0F) gl2psPrintf("stroke-opacity=\"%g\" ", rgba[0][3]);
-      gl2psPrintSVGDash(prim->pattern, prim->factor);
-      gl2psPrintf("points=\"");
-      gl2psPrintPair(gl2psStrokeFixed(xyz[0][0]),
-                        gl2psStrokeFixed(xyz[0][1]), 1);
-    }
-    else{
-      gl2psPrintPair(gl2psStrokeFixed(xyz[0][0]),
-                        gl2psStrokeFixed(xyz[0][1]), 0);
-    }
+    gl2psSVGLine(prim, xyz, rgba[0]);
     break;
   case GL2PS_TRIANGLE :
     gl2psPrintSVGSmoothTriangle(xyz, rgba, 0);
@@ -5674,8 +5684,8 @@ static GLint gl2psPrintSVGEndViewport(void)
 
 static void gl2psPrintSVGFinalPrimitive(void)
 {
-  /* End any remaining line, if any */
-  gl2psEndSVGLine();
+  /* End any remaining path run */
+  gl2psSVGEndRun();
 }
 
 /* definition of the SVG backend */
@@ -7970,6 +7980,8 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   }
 
   gl2ps->tex_scaling = 1.;
+  gl2ps->svgrun = 0;
+  gl2ps->svgstyle[0] = '\0';
   gl2ps->frontfaces = GL_FALSE;
 
   return GL2PS_SUCCESS;
