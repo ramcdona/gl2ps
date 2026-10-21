@@ -348,7 +348,10 @@ determine the way primitives are handled:
   Controls the number of flat-shaded \mbox{(sub-)triangles} used to
   approximate a smooth-shaded triangle. (For PostScript output, this
   is only used when the \dd{shfill} operator is not supported by the
-  system or when the \dd{GL2PS_NO_PS3_SHADING} option is set.)  The
+  system or when the \dd{GL2PS_NO_PS3_SHADING} option is set. For SVG
+  output, this is only used for the triangles whose three vertex colors are
+  not aligned in the RGB color space; the others are drawn exactly with a
+  linear gradient.)  The
   arguments \dd{nr}, \dd{ng} and \dd{nb} specify the number of values
   used for interpolating the full range of red, green and blue color
   components; that is, a triangle is recursively subdivided until the

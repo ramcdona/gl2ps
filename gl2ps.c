@@ -245,6 +245,9 @@ typedef struct {
      hundredths */
   long svgcur[2], svgstart[2];
 
+  /* the number of SVG gradients written */
+  int svggradients;
+
   /* the triangle a primitive is a piece of, under the raster sort, and
      that of the open run; -1 for none */
   int svggroup, svgrungroup;
@@ -5379,6 +5382,104 @@ static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
   gl2ps->svgcur[1] = gl2ps->svgstart[1];
 }
 
+/* A triangle whose vertex colors lie on a line in RGB, within the
+   color threshold, and share one alpha, is drawn exactly by a linear
+   gradient: the position along that color line is linear over the
+   triangle.  Returns 0, writing nothing, for any other triangle. */
+static int gl2psPrintSVGGradientTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3])
+{
+  int i, j, k, c, a, b;
+  GLfloat d[3], dd, best = -1.0F, sk, r, det, gx, gy, g2, e1x, e1y, e2x, e2y;
+  GLfloat slo, shi, s0, s1, t;
+  GL2PSrgba lo, hi;
+  long x[3], y[3];
+  char col0[32], col1[32], opacity[32];
+
+  if(rgba[0][3] != rgba[1][3] || rgba[0][3] != rgba[2][3]) return 0;
+
+  /* the two colors farthest apart end the gradient */
+  i = 0; j = 1;
+  for(a = 0; a < 3; a++){
+    b = (a + 1) % 3;
+    dd = 0.0F;
+    for(c = 0; c < 3; c++)
+      dd += (rgba[b][c] - rgba[a][c]) * (rgba[b][c] - rgba[a][c]);
+    if(dd > best){ best = dd; i = a; j = b; }
+  }
+  k = 3 - i - j;
+  if(best <= 0.0F) return 0;
+
+  /* where the third falls along them, and how far off the line */
+  for(c = 0; c < 3; c++) d[c] = rgba[j][c] - rgba[i][c];
+  sk = 0.0F;
+  for(c = 0; c < 3; c++) sk += (rgba[k][c] - rgba[i][c]) * d[c];
+  sk /= best;
+  for(c = 0; c < 3; c++){
+    r = rgba[k][c] - (rgba[i][c] + sk * d[c]);
+    if(fabs(r) > gl2ps->threshold[c]) return 0;
+  }
+
+  for(c = 0; c < 3; c++){
+    x[c] = gl2psFixed(xyz[c][0]);
+    y[c] = gl2psFixed(xyz[c][1]);
+  }
+
+  /* gradient of s, which is 0 at i, 1 at j and sk at k */
+  e1x = (GLfloat)(x[j] - x[i]) / 100.0F; e1y = (GLfloat)(y[j] - y[i]) / 100.0F;
+  e2x = (GLfloat)(x[k] - x[i]) / 100.0F; e2y = (GLfloat)(y[k] - y[i]) / 100.0F;
+  det = e1x * e2y - e1y * e2x;
+  if(det == 0.0F) return 0;
+  gx = (1.0F * e2y - sk * e1y) / det;
+  gy = (sk * e1x - 1.0F * e2x) / det;
+  g2 = gx * gx + gy * gy;
+  if(g2 <= 0.0F) return 0;
+
+  /* the stops end the widest range of s over which the colors stay in
+     [0,1] */
+  slo = -1.0e30F;
+  shi = 1.0e30F;
+  for(c = 0; c < 3; c++){
+    if(d[c] == 0.0F) continue;
+    s0 = -rgba[i][c] / d[c];
+    s1 = (1.0F - rgba[i][c]) / d[c];
+    if(s0 > s1){ t = s0; s0 = s1; s1 = t; }
+    if(s0 > slo) slo = s0;
+    if(s1 < shi) shi = s1;
+  }
+  for(c = 0; c < 3; c++){
+    lo[c] = rgba[i][c] + slo * d[c];
+    hi[c] = rgba[i][c] + shi * d[c];
+  }
+  lo[3] = hi[3] = rgba[i][3];
+
+  gl2psSVGEndRun();
+  gl2psSVGGetColorString(lo, col0);
+  gl2psSVGGetColorString(hi, col1);
+  gl2psPrintf("<linearGradient id=\"g%d\" gradientUnits=\"userSpaceOnUse\" "
+              "x1=\"%.8g\" y1=\"%.8g\" x2=\"%.8g\" y2=\"%.8g\">"
+              "<stop offset=\"0\" stop-color=\"%s\"/>"
+              "<stop offset=\"1\" stop-color=\"%s\"/>"
+              "</linearGradient>\n", gl2ps->svggradients,
+              (double)x[i] / 100.0 + slo * gx / g2,
+              (double)y[i] / 100.0 + slo * gy / g2,
+              (double)x[i] / 100.0 + shi * gx / g2,
+              (double)y[i] / 100.0 + shi * gy / g2, col0, col1);
+
+  opacity[0] = '\0';
+  if(rgba[0][3] < 1.0F) sprintf(opacity, "fill-opacity=\"%g\" ", rgba[0][3]);
+  gl2psPrintf("<path fill=\"url(#g%d)\" %sshape-rendering=\"crispEdges\" d=\"M",
+              gl2ps->svggradients, opacity);
+  gl2psPrintPair(x[0], y[0], 1);
+  gl2psPrintf("L");
+  gl2psPrintPair(x[1], y[1], 1);
+  gl2psPrintPair(x[2], y[2], 0);
+  gl2psPrintf("z");
+  gl2ps->svgrun = 3;
+  gl2ps->svgstyle[0] = '\0';
+  gl2ps->svggradients++;
+  return 1;
+}
+
 static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
                                         GLint depth)
 {
@@ -5386,12 +5487,15 @@ static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
   GL2PSxyz xyz2[3];
   GL2PSrgba rgba2[3];
 
-  /* Apparently there is no easy way to do Gouraud shading in SVG
-     without explicitly pre-defining gradients, so for now we just do
-     recursive subdivision */
+  /* SVG has no Gouraud shading: a triangle in one color is filled, one
+     whose colors lie on a line gets a linear gradient, and any other is
+     subdivided */
 
   if(gl2psSameColorThreshold(3, rgba, gl2ps->threshold)){
     gl2psPrintSVGFlatTriangle(xyz, rgba[0]);
+  }
+  else if(gl2psPrintSVGGradientTriangle(xyz, rgba)){
+    /* drawn with a linear gradient */
   }
   else if(depth >= GL2PS_SVG_TRIANGLE_MAX_DEPTH){
     GL2PSrgba avg;
@@ -8061,6 +8165,7 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   gl2ps->tex_scaling = 1.;
   gl2ps->svgrun = 0;
   gl2ps->svgstyle[0] = '\0';
+  gl2ps->svggradients = 0;
   gl2ps->svggroup = -1;
   gl2ps->svgrungroup = -1;
   gl2ps->frontfaces = GL_FALSE;
