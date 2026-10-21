@@ -243,6 +243,8 @@ determine the way primitives are handled:
   a fraction of the time.
   Consecutive triangles of the same color are kept together where the order
   allows it.
+  Triangles passing through an opaque triangle are split along the
+  intersection.
 
   Transparent triangles are output after the opaque ones, in the order in
   which they were drawn, and the other primitives after them.

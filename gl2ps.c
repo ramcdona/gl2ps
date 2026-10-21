@@ -5950,6 +5950,10 @@ static GL2PSbackend *gl2psbackends[] = {
  * Of the triangles free to go next, one of the color of the last goes
  * first, so that runs of one color stay together.
  *
+ * Seen triangles that pass through an opaque one are first cut by each
+ * other's planes, as the BSP sort would cut them, and the pass is run
+ * again on the pieces.
+ *
  * Lines and points are cut to the runs that pass the depth test.
  * The lines of one style are joined end to start into chains.
  * Each line goes out once.
@@ -6740,6 +6744,316 @@ static void gl2psRasterChainLines(GL2PSlist *lines, GL2PSlist *out)
   gl2psFree(byend);
 }
 
+/* The extent along axis k of where a triangle meets a plane it spans,
+   given the signed distances d of its vertices from that plane; returns
+   0 when it does not span the plane */
+static int gl2psRasterCrossInterval(GL2PSprimitive *t, const GLfloat d[3],
+                                    int k, GLfloat *lo, GLfloat *hi)
+{
+  int i, j, n = 0, pos = 0, neg = 0;
+  GLfloat p, s;
+
+  for(i = 0; i < 3; i++){
+    if(d[i] > GL2PS_EPSILON) pos = 1;
+    else if(d[i] < -GL2PS_EPSILON) neg = 1;
+  }
+  if(!pos || !neg) return 0;
+
+  for(i = 0; i < 3; i++){
+    j = (i + 1) % 3;
+    if(fabs(d[i]) <= GL2PS_EPSILON){
+      p = t->verts[i].xyz[k];
+    }
+    else if((d[i] > GL2PS_EPSILON && d[j] < -GL2PS_EPSILON) ||
+            (d[i] < -GL2PS_EPSILON && d[j] > GL2PS_EPSILON)){
+      s = d[i] / (d[i] - d[j]);
+      p = t->verts[i].xyz[k] + s * (t->verts[j].xyz[k] - t->verts[i].xyz[k]);
+    }
+    else{
+      continue;
+    }
+    if(n == 0 || p < *lo) *lo = p;
+    if(n == 0 || p > *hi) *hi = p;
+    n++;
+  }
+  return 1;
+}
+
+/* 1 when triangles a and b pass through each other: each spans the
+   other's plane, and the two segments where they meet the line common
+   to both planes overlap */
+static int gl2psRasterTrianglesCross(GL2PSprimitive *a, GL2PSplane pa,
+                                     GL2PSprimitive *b, GL2PSplane pb)
+{
+  GLfloat da[3], db[3], dir[3], alo = 0.0F, ahi = 0.0F, blo = 0.0F, bhi = 0.0F;
+  int i, k;
+
+  for(i = 0; i < 3; i++){
+    da[i] = gl2psComparePointPlane(a->verts[i].xyz, pb);
+    db[i] = gl2psComparePointPlane(b->verts[i].xyz, pa);
+  }
+
+  gl2psPvec(pa, pb, dir);
+  k = 0;
+  if(fabs(dir[1]) > fabs(dir[k])) k = 1;
+  if(fabs(dir[2]) > fabs(dir[k])) k = 2;
+  if(GL2PS_ZERO(dir[k])) return 0;
+
+  if(!gl2psRasterCrossInterval(a, da, k, &alo, &ahi)) return 0;
+  if(!gl2psRasterCrossInterval(b, db, k, &blo, &bhi)) return 0;
+  if(alo < blo) alo = blo;
+  if(ahi > bhi) ahi = bhi;
+  return (ahi - alo > GL2PS_EPSILON);
+}
+
+/* Most pieces gl2psRasterCut cuts a triangle into; past it the cuts left
+   are not made */
+#define GL2PS_RASTER_MAX_PIECES 4096
+
+/* Whether gl2psRasterCut is to cut piece by plane i of its list */
+typedef int (*GL2PSrastercuttest)(GL2PSprimitive *piece, GL2PSplane plane,
+                                  int i, void *data);
+
+/* Cuts prim by each of the n planes in turn, with the BSP sort's split,
+   a piece only where test says so, adding the pieces, as triangles, to
+   list */
+static void gl2psRasterCut(GL2PSprimitive *prim, GL2PSplane *planes, int n,
+                           GL2PSrastercuttest test, void *data,
+                           GL2PSlist *list)
+{
+  GL2PSlist *pieces, *next;
+  GL2PSprimitive *piece, *front, *back;
+  int i, j, npieces;
+
+  pieces = gl2psListCreate(8, 8, sizeof(GL2PSprimitive*));
+  piece = gl2psCopyPrimitive(prim);
+  gl2psListAdd(pieces, &piece);
+  for(i = 0; i < n; i++){
+    npieces = gl2psListNbr(pieces);
+    next = gl2psListCreate(npieces + 8, 8, sizeof(GL2PSprimitive*));
+    for(j = 0; j < npieces; j++){
+      piece = *(GL2PSprimitive**)gl2psListPointer(pieces, j);
+      if(npieces + gl2psListNbr(next) < GL2PS_RASTER_MAX_PIECES &&
+         test(piece, planes[i], i, data) &&
+         gl2psSplitPrimitive(piece, planes[i], &front, &back) ==
+         GL2PS_SPANNING){
+        if(front->numverts >= 3) gl2psAddPrimitiveInList(front, next);
+        else gl2psFreePrimitive(&front);
+        if(back->numverts >= 3) gl2psAddPrimitiveInList(back, next);
+        else gl2psFreePrimitive(&back);
+        gl2psFreePrimitive(&piece);
+      }
+      else{
+        gl2psListAdd(next, &piece);
+      }
+    }
+    gl2psListDelete(pieces);
+    pieces = next;
+  }
+  for(j = 0; j < gl2psListNbr(pieces); j++){
+    piece = *(GL2PSprimitive**)gl2psListPointer(pieces, j);
+    gl2psListAdd(list, &piece);
+  }
+  gl2psListDelete(pieces);
+}
+
+/* The test of gl2psRasterSplitCrossings: a piece is cut by the plane of
+   triangle i of data only where it crosses that triangle */
+static int gl2psRasterCrossTest(GL2PSprimitive *piece, GL2PSplane plane,
+                                int i, void *data)
+{
+  GL2PSprimitive **crossed = (GL2PSprimitive**)data;
+  GL2PSplane own;
+
+  gl2psGetPlane(piece, own);
+  return gl2psRasterTrianglesCross(piece, own, crossed[i], plane);
+}
+
+/* Cell size, in pixels, of the grid that finds triangles near each other */
+#define GL2PS_RASTER_CROSS_CELL 32
+
+/* The cell of the crossing grid, of n, a coordinate v falls in */
+static int gl2psRasterCell(GLfloat v, GLfloat v0, int n)
+{
+  GLfloat c = (v - v0) / GL2PS_RASTER_CROSS_CELL;
+
+  if(!(c > 0.0F)) return 0;
+  if(c > (GLfloat)(n - 1)) return n - 1;
+  return (int)c;
+}
+
+/* Where seen triangles (keep set) pass through each other, one of them
+   opaque, cuts each by the planes of those it crosses, so the pieces
+   meet along the intersections and can be ordered whole.  Rebuilds the
+   primitive list from the other primitives, the seen triangles left
+   whole and the pieces, dropping the hidden triangles.  Returns the number of
+   triangles cut; at 0 the list is untouched. */
+static int gl2psRasterSplitCrossings(const char *keep)
+{
+  GL2PSprimitive *prim, *p, *q, **crossed;
+  GL2PSlist *list;
+  GL2PSplane *planes, *cut;
+  GLfloat *box, x0, y0, cx, cy;
+  GLint *tris, *cellstart, *cellfill, *cells, *pairs = NULL, *wanted, *more;
+  GLint nprims = gl2psListNbr(gl2ps->primitives), ntris = 0, npairs = 0;
+  GLint maxpairs = 0;
+  GLint gw, gh, i, j, k, c, m, a, b, ci, cj, nsplit = 0, s, e;
+  char *split;
+
+  /* the seen triangles and their screen and depth boxes */
+  tris = (GLint*)gl2psMalloc(((size_t)nprims + 1) * sizeof(GLint));
+  for(i = 0; i < nprims; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+    if(prim->type == GL2PS_TRIANGLE && keep[i]) tris[ntris++] = i;
+  }
+  if(ntris < 2){
+    gl2psFree(tris);
+    return 0;
+  }
+  box = (GLfloat*)gl2psMalloc(6 * (size_t)ntris * sizeof(GLfloat));
+  planes = (GL2PSplane*)gl2psMalloc((size_t)ntris * sizeof(GL2PSplane));
+  for(i = 0; i < ntris; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, tris[i]);
+    for(c = 0; c < 3; c++){
+      box[6 * i + c] = box[6 * i + 3 + c] = prim->verts[0].xyz[c];
+      for(k = 1; k < 3; k++){
+        if(prim->verts[k].xyz[c] < box[6 * i + c])
+          box[6 * i + c] = prim->verts[k].xyz[c];
+        if(prim->verts[k].xyz[c] > box[6 * i + 3 + c])
+          box[6 * i + 3 + c] = prim->verts[k].xyz[c];
+      }
+    }
+    gl2psGetPlane(prim, planes[i]);
+  }
+
+  /* each triangle listed in every grid cell its box touches */
+  x0 = (GLfloat)gl2ps->viewport[0];
+  y0 = (GLfloat)gl2ps->viewport[1];
+  gw = gl2ps->viewport[2] / GL2PS_RASTER_CROSS_CELL + 2;
+  gh = gl2ps->viewport[3] / GL2PS_RASTER_CROSS_CELL + 2;
+  cellstart = (GLint*)gl2psMalloc(((size_t)gw * gh + 1) * sizeof(GLint));
+  cellfill = (GLint*)gl2psMalloc(((size_t)gw * gh + 1) * sizeof(GLint));
+  for(i = 0; i <= gw * gh; i++) cellstart[i] = 0;
+  for(m = 0; m < 2; m++){
+    for(i = 0; i < ntris; i++){
+      a = gl2psRasterCell(box[6 * i], x0, gw);
+      b = gl2psRasterCell(box[6 * i + 3], x0, gw);
+      s = gl2psRasterCell(box[6 * i + 1], y0, gh);
+      e = gl2psRasterCell(box[6 * i + 4], y0, gh);
+      for(cj = s; cj <= e; cj++){
+        for(ci = a; ci <= b; ci++){
+          if(m == 0) cellstart[cj * gw + ci + 1]++;
+          else cells[cellfill[cj * gw + ci]++] = i;
+        }
+      }
+    }
+    if(m == 0){
+      for(i = 0; i < gw * gh; i++) cellstart[i + 1] += cellstart[i];
+      for(i = 0; i < gw * gh; i++) cellfill[i] = cellstart[i];
+      cells = (GLint*)gl2psMalloc(((size_t)cellstart[gw * gh] + 1) *
+                                  sizeof(GLint));
+    }
+  }
+
+  /* pairs whose boxes overlap, tested in the cell holding the corner of
+     the overlap so each is tested once */
+  for(c = 0; c < gw * gh; c++){
+    for(j = cellstart[c]; j < cellstart[c + 1]; j++){
+      for(k = j + 1; k < cellstart[c + 1]; k++){
+        a = cells[j]; b = cells[k];
+        if(box[6 * a] > box[6 * b + 3] || box[6 * b] > box[6 * a + 3] ||
+           box[6 * a + 1] > box[6 * b + 4] || box[6 * b + 1] > box[6 * a + 4] ||
+           box[6 * a + 2] > box[6 * b + 5] || box[6 * b + 2] > box[6 * a + 5])
+          continue;
+        cx = box[6 * a];
+        if(box[6 * b] > cx) cx = box[6 * b];
+        cy = box[6 * a + 1];
+        if(box[6 * b + 1] > cy) cy = box[6 * b + 1];
+        ci = gl2psRasterCell(cx, x0, gw);
+        cj = gl2psRasterCell(cy, y0, gh);
+        if(cj * gw + ci != c) continue;
+        p = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, tris[a]);
+        q = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, tris[b]);
+        /* transparent triangles are not depth tested among themselves */
+        if(!gl2psRasterIsOpaque(p) && !gl2psRasterIsOpaque(q)) continue;
+        if(!gl2psRasterTrianglesCross(p, planes[a], q, planes[b])) continue;
+        if(npairs + 2 > maxpairs){
+          /* a list that cannot grow keeps the crossings it has */
+          if(maxpairs > (INT_MAX - 256) / 4) continue;
+          more = (GLint*)realloc(pairs, 2 * (size_t)(2 * maxpairs + 256) *
+                                 sizeof(GLint));
+          if(!more) continue;
+          pairs = more;
+          maxpairs = 2 * maxpairs + 256;
+        }
+        pairs[2 * npairs] = a; pairs[2 * npairs + 1] = b; npairs++;
+        pairs[2 * npairs] = b; pairs[2 * npairs + 1] = a; npairs++;
+      }
+    }
+  }
+  gl2psFree(cellstart);
+  gl2psFree(cellfill);
+  gl2psFree(cells);
+
+  if(npairs){
+    qsort(pairs, npairs, 2 * sizeof(GLint), gl2psRasterComparePairs);
+    split = (char*)gl2psMalloc((size_t)nprims);
+    wanted = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+    for(i = 0; i < nprims; i++) split[i] = 0;
+    for(i = 0; i < npairs; i++) split[tris[pairs[2 * i]]] = 1;
+    cut = (GL2PSplane*)gl2psMalloc((size_t)npairs * sizeof(GL2PSplane));
+    crossed = (GL2PSprimitive**)gl2psMalloc((size_t)npairs *
+                                            sizeof(GL2PSprimitive*));
+
+    list = gl2psListCreate(nprims + npairs + 100, 500, sizeof(GL2PSprimitive*));
+    for(i = 0; i < nprims; i++) wanted[i] = -1;
+    for(i = 0; i < ntris; i++) wanted[tris[i]] = i;
+    for(i = 0, s = 0; i < nprims; i++){
+      prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+      if(prim->type != GL2PS_TRIANGLE){
+        gl2psListAdd(list, &prim);
+      }
+      else if(keep[i] && !split[i]){
+        gl2psListAdd(list, &prim);
+      }
+      else if(!keep[i]){
+        /* freed below */
+      }
+      else{
+        /* the planes of every triangle this one crosses */
+        a = wanted[i];
+        while(s < npairs && pairs[2 * s] < a) s++;
+        for(e = s, m = 0; e < npairs && pairs[2 * e] == a; e++, m++){
+          memcpy(cut[m], planes[pairs[2 * e + 1]], sizeof(GL2PSplane));
+          crossed[m] = *(GL2PSprimitive**)gl2psListPointer
+            (gl2ps->primitives, tris[pairs[2 * e + 1]]);
+        }
+        gl2psRasterCut(prim, cut, m, gl2psRasterCrossTest, crossed, list);
+        nsplit++;
+      }
+    }
+
+    /* the hidden triangles and those cut, once no cut needs them */
+    for(i = 0; i < nprims; i++){
+      prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+      if(prim->type == GL2PS_TRIANGLE && (!keep[i] || split[i]))
+        gl2psFreePrimitive(&prim);
+    }
+    gl2psListDelete(gl2ps->primitives);
+    gl2ps->primitives = list;
+    gl2psFree(split);
+    gl2psFree(wanted);
+    gl2psFree(cut);
+    gl2psFree(crossed);
+  }
+
+  gl2psFree(pairs);
+  gl2psFree(tris);
+  gl2psFree(box);
+  gl2psFree(planes);
+  return nsplit;
+}
+
 static void gl2psRasterFree(void)
 {
   if(!gl2psRaster) return;
@@ -6788,9 +7102,11 @@ static void gl2psRasterPrepare(void)
 }
 
 /* Replaces the primitive list with its visible part, in drawing order.
-   Returns GL_FALSE, with the list untouched, when the buffers cannot be
-   allocated. */
-static GLboolean gl2psRasterSort(void)
+   With cut, seen triangles that pass through each other are first cut
+   along the intersections.  Returns GL_FALSE when the buffers cannot be
+   allocated, with the list unsorted: untouched, or cut along the
+   crossings when only the sort of the pieces failed. */
+static GLboolean gl2psRasterSort(GLboolean cut)
 {
   GL2PSraster *r;
   GL2PSlist *lines, *sorted, *behind, *others;
@@ -6883,6 +7199,17 @@ static GLboolean gl2psRasterSort(void)
       keep[i] = 1;
       transp[ntransp++] = i;
     }
+  }
+
+  /* triangles that pass through each other are cut along the
+     intersections, and the sort starts again on the pieces */
+  if(cut && gl2psRasterSplitCrossings(keep) > 0){
+    gl2psFree(zmean);
+    gl2psFree(keep);
+    gl2psFree(opaque);
+    gl2psFree(transp);
+    gl2psRasterFree();
+    return gl2psRasterSort(GL_FALSE);
   }
 
   /* a triangle printed in one color gets the class of that color */
@@ -7040,7 +7367,7 @@ static GLint gl2psPrintPrimitives(void)
     break;
   case GL2PS_RASTER_SORT :
     gl2psRasterPrepare();
-    if(!gl2psRasterSort()){
+    if(!gl2psRasterSort(GL_TRUE)){
       gl2psMsg(GL2PS_WARNING, "Raster sort buffers unavailable, primitives "
                "left unsorted");
     }
