@@ -457,6 +457,40 @@ static int gl2psPrintf(const char* fmt, ...)
   return ret;
 }
 
+/* Coordinates are written to a fixed precision, the same over the whole
+   page: a coordinate in hundredths, rounded */
+static long gl2psFixed(GLfloat v)
+{
+  return (long)floor(100.0 * (double)v + 0.5);
+}
+
+/* Prints a number of hundredths, with a separator from a number before
+   unless it follows a command, or in SVG is negative, where the sign
+   separates it; returns the number of bytes written */
+static int gl2psPrintFixed(long t, int aftercmd)
+{
+  int n = 0;
+
+  if(!aftercmd && (t >= 0 || gl2ps->format != GL2PS_SVG))
+    n += gl2psPrintf(" ");
+  if(t < 0){
+    n += gl2psPrintf("-");
+    t = -t;
+  }
+  if(t % 100 == 0)
+    n += gl2psPrintf("%ld", t / 100);
+  else if(t % 10 == 0)
+    n += gl2psPrintf("%ld.%ld", t / 100, (t % 100) / 10);
+  else
+    n += gl2psPrintf("%ld.%02ld", t / 100, t % 100);
+  return n;
+}
+
+static int gl2psPrintPair(long x, long y, int aftercmd)
+{
+  return gl2psPrintFixed(x, aftercmd) + gl2psPrintFixed(y, 0);
+}
+
 static void gl2psPrintGzipHeader(void)
 {
 #if defined(GL2PS_HAVE_ZLIB)
@@ -5235,8 +5269,11 @@ static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
   gl2psPrintf("<polygon fill=\"%s\" ", col);
   if(rgba[3] < 1.0F) gl2psPrintf("fill-opacity=\"%g\" ", rgba[3]);
   gl2psPrintf("shape-rendering=\"crispEdges\" ");
-  gl2psPrintf("points=\"%g,%g %g,%g %g,%g\"/>\n", xyz[0][0], xyz[0][1],
-              xyz[1][0], xyz[1][1], xyz[2][0], xyz[2][1]);
+  gl2psPrintf("points=\"");
+  gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 1);
+  gl2psPrintPair(gl2psFixed(xyz[1][0]), gl2psFixed(xyz[1][1]), 0);
+  gl2psPrintPair(gl2psFixed(xyz[2][0]), gl2psFixed(xyz[2][1]), 0);
+  gl2psPrintf("\"/>\n");
 }
 
 static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
@@ -5327,8 +5364,10 @@ static void gl2psEndSVGLine(void)
 {
   int i;
   if(gl2ps->lastvertex.rgba[0] >= 0.){
-    gl2psPrintf("%g,%g\"/>\n", gl2ps->lastvertex.xyz[0],
-                gl2ps->viewport[3] - gl2ps->lastvertex.xyz[1]);
+    gl2psPrintPair(gl2psFixed(gl2ps->lastvertex.xyz[0]),
+                      gl2psFixed(gl2ps->viewport[3] -
+                                    gl2ps->lastvertex.xyz[1]), 0);
+    gl2psPrintf("\"/>\n");
     for(i = 0; i < 3; i++)
       gl2ps->lastvertex.xyz[i] = -1.;
     for(i = 0; i < 4; i++)
@@ -5467,10 +5506,11 @@ static void gl2psPrintSVGPrimitive(void *data)
                   lcap, ljoin);
       if(rgba[0][3] < 1.0F) gl2psPrintf("stroke-opacity=\"%g\" ", rgba[0][3]);
       gl2psPrintSVGDash(prim->pattern, prim->factor);
-      gl2psPrintf("points=\"%g,%g ", xyz[0][0], xyz[0][1]);
+      gl2psPrintf("points=\"");
+      gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 1);
     }
     else{
-      gl2psPrintf("%g,%g ", xyz[0][0], xyz[0][1]);
+      gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 0);
     }
     break;
   case GL2PS_TRIANGLE :
