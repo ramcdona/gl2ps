@@ -235,6 +235,9 @@ typedef struct {
   /* for TEX scaling */
   GLfloat tex_scaling;
 
+  /* the kind of the open PostScript run of triangles, 0 for none */
+  int psrun;
+
   /* the kind of the open SVG path run, 0 for none, its style, and where
      its last line ended */
   int svgrun;
@@ -2961,7 +2964,10 @@ static void gl2psPrintPostScriptHeader(void)
               "/LS { newpath moveto } BD\n"
               "/L  { lineto } BD\n"
               "/LE { lineto stroke } BD\n"
-              "/T  { newpath moveto lineto lineto closepath fill } BD\n");
+              "/T  { newpath moveto lineto lineto closepath fill } BD\n"
+              "/TS { newpath moveto lineto lineto closepath } BD\n"
+              "/TP { moveto lineto lineto closepath } BD\n"
+              "/F  { fill } BD\n");
 
   /* Smooth-shaded triangle with PostScript level 3 shfill operator:
         x3 y3 r3 g3 b3 x2 y2 r2 g2 b2 x1 y1 r1 g1 b1 STshfill */
@@ -3106,6 +3112,14 @@ static void gl2psResetPostScriptColor(void)
   gl2ps->lastrgba[0] = gl2ps->lastrgba[1] = gl2ps->lastrgba[2] = -1.;
 }
 
+/* Triangles of one color in a row are filled as one path, a run */
+static void gl2psEndPostScriptRun(void)
+{
+  if(gl2ps->psrun == 1)
+    gl2psPrintf("F\n");
+  gl2ps->psrun = 0;
+}
+
 static void gl2psEndPostScriptLine(void)
 {
   int i;
@@ -3184,6 +3198,7 @@ static int gl2psPrintPostScriptDash(GLushort pattern, GLint factor, const char *
 static void gl2psPrintPostScriptPrimitive(void *data)
 {
   int newline, i;
+  long x[3], y[3];
   GL2PSprimitive *prim;
 
   prim = *(GL2PSprimitive**)data;
@@ -3196,6 +3211,7 @@ static void gl2psPrintPostScriptPrimitive(void *data)
      segment. So if the primitive to print is not a line we must first
      finish the current line (if any): */
   if(prim->type != GL2PS_LINE) gl2psEndPostScriptLine();
+  if(prim->type != GL2PS_TRIANGLE) gl2psEndPostScriptRun();
 
   switch(prim->type){
   case GL2PS_POINT :
@@ -3258,6 +3274,7 @@ static void gl2psPrintPostScriptPrimitive(void *data)
     break;
   case GL2PS_TRIANGLE :
     if(!gl2psVertsSameColor(prim)){
+      gl2psEndPostScriptRun();
       gl2psResetPostScriptColor();
       for(i = 2; i >= 0; i--){
         gl2psPrintPair(gl2psFixed(prim->verts[i].xyz[0]),
@@ -3268,11 +3285,22 @@ static void gl2psPrintPostScriptPrimitive(void *data)
       gl2psPrintf(" ST\n");
     }
     else{
+      if(!gl2psFixedTriangle(prim->verts[0].xyz, prim->verts[1].xyz,
+                             prim->verts[2].xyz, x, y))
+        break;
+      if(gl2ps->psrun != 1 ||
+         !gl2psSameColor(gl2ps->lastrgba, prim->verts[0].rgba))
+        gl2psEndPostScriptRun();
       gl2psPrintPostScriptColor(prim->verts[0].rgba);
       for(i = 2; i >= 0; i--)
-        gl2psPrintPair(gl2psFixed(prim->verts[i].xyz[0]),
-                       gl2psFixed(prim->verts[i].xyz[1]), i == 2);
-      gl2psPrintf(" T\n");
+        gl2psPrintPair(x[i], y[i], i == 2);
+      if(!gl2ps->psrun){
+        gl2psPrintf(" TS\n");
+        gl2ps->psrun = 1;
+      }
+      else{
+        gl2psPrintf(" TP\n");
+      }
     }
     break;
   case GL2PS_QUADRANGLE :
@@ -3410,8 +3438,9 @@ static GLint gl2psPrintPostScriptEndViewport(void)
 
 static void gl2psPrintPostScriptFinalPrimitive(void)
 {
-  /* End any remaining line, if any */
+  /* End any remaining line or run, if any */
   gl2psEndPostScriptLine();
+  gl2psEndPostScriptRun();
 }
 
 /* definition of the PostScript and Encapsulated PostScript backends */
@@ -8178,6 +8207,7 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   }
 
   gl2ps->tex_scaling = 1.;
+  gl2ps->psrun = 0;
   gl2ps->svgrun = 0;
   gl2ps->svgstyle[0] = '\0';
   gl2ps->svggradients = 0;
