@@ -241,6 +241,10 @@ typedef struct {
   char svgstyle[256];
   GL2PSxyz svgend;
 
+  /* the current point of the open run and the start of its subpath, in
+     hundredths */
+  long svgcur[2], svgstart[2];
+
   /* the triangle a primitive is a piece of, under the raster sort, and
      that of the open run; -1 for none */
   int svggroup, svgrungroup;
@@ -5323,6 +5327,22 @@ static int gl2psSVGBeginRun(int kind, const char *style)
   return 1;
 }
 
+/* Starts a subpath; after the first of a run, coordinates are relative to
+   the rounded point before, so that the rounding does not build up */
+static void gl2psSVGMoveTo(long x, long y, int newrun)
+{
+  if(newrun){
+    gl2psPrintf("M");
+    gl2psPrintPair(x, y, 1);
+  }
+  else{
+    gl2psPrintf("m");
+    gl2psPrintPair(x - gl2ps->svgcur[0], y - gl2ps->svgcur[1], 1);
+  }
+  gl2ps->svgcur[0] = gl2ps->svgstart[0] = x;
+  gl2ps->svgcur[1] = gl2ps->svgstart[1] = y;
+}
+
 /* A triangle in one color, xyz already flipped to SVG coordinates, in
    the run of its fill.  The triangles of a run all wind one way, so the
    nonzero fill rule fills their union and their shared edges leave no
@@ -5331,6 +5351,7 @@ static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
 {
   long x[3], y[3];
   char col[32], style[256];
+  int newrun;
 
   if(!gl2psFixedTriangle(xyz[0], xyz[1], xyz[2], x, y)) return;
 
@@ -5347,14 +5368,15 @@ static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
   if(rgba[3] < 1.0F &&
      (gl2ps->svggroup < 0 || gl2ps->svggroup != gl2ps->svgrungroup))
     gl2psSVGEndRun();
-  gl2psSVGBeginRun(1, style);
+  newrun = gl2psSVGBeginRun(1, style);
   gl2ps->svgrungroup = gl2ps->svggroup;
-  gl2psPrintf("M");
-  gl2psPrintPair(x[0], y[0], 1);
-  gl2psPrintf("L");
-  gl2psPrintPair(x[1], y[1], 1);
-  gl2psPrintPair(x[2], y[2], 0);
+  gl2psSVGMoveTo(x[0], y[0], newrun);
+  gl2psPrintf("l");
+  gl2psPrintPair(x[1] - x[0], y[1] - y[0], 1);
+  gl2psPrintPair(x[2] - x[1], y[2] - y[1], 0);
   gl2psPrintf("z");
+  gl2ps->svgcur[0] = gl2ps->svgstart[0];
+  gl2ps->svgcur[1] = gl2ps->svgstart[1];
 }
 
 static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
@@ -5493,12 +5515,12 @@ static void gl2psSVGLine(GL2PSprimitive *prim, GL2PSxyz xyz[2], GL2PSrgba rgba)
                                                prim->verts[0].xyz)))
     gl2psSVGEndRun();
   newrun = gl2psSVGBeginRun(2, style);
-  if(newrun || !gl2psSamePosition(gl2ps->svgend, prim->verts[0].xyz)){
-    gl2psPrintf("M");
-    gl2psPrintPair(x0, y0, 1);
-  }
-  gl2psPrintf("L");
-  gl2psPrintPair(x1, y1, 1);
+  if(newrun || !gl2psSamePosition(gl2ps->svgend, prim->verts[0].xyz))
+    gl2psSVGMoveTo(x0, y0, newrun);
+  gl2psPrintf("l");
+  gl2psPrintPair(x1 - gl2ps->svgcur[0], y1 - gl2ps->svgcur[1], 1);
+  gl2ps->svgcur[0] = x1;
+  gl2ps->svgcur[1] = y1;
   memcpy(gl2ps->svgend, prim->verts[1].xyz, sizeof(GL2PSxyz));
 }
 
