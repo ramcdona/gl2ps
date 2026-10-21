@@ -4014,6 +4014,14 @@ static void gl2psSortOutTrianglePDFgroup(GL2PSpdfgroup *gro)
 
 /* Main stream data */
 
+/* A point of a line, rounded as the other formats round them, and the
+   path operator */
+static int gl2psPrintPDFLinePoint(GLfloat *xyz, const char *op)
+{
+  return gl2psPrintPair(gl2psStrokeFixed(xyz[0]), gl2psStrokeFixed(xyz[1]), 1) +
+    gl2psPrintf(" %s\n", op);
+}
+
 static void gl2psPDFgroupListWriteMainStream(void)
 {
   int i, j, lastel, count;
@@ -4065,9 +4073,7 @@ static void gl2psPDFgroupListWriteMainStream(void)
       gl2ps->streamlength += gl2psPrintPDFStrokeColor(prim->verts[0].rgba);
       gl2ps->streamlength += gl2psPrintPostScriptDash(prim->pattern, prim->factor, "d");
       /* start new path */
-      gl2ps->streamlength +=
-        gl2psPrintf("%f %f m\n",
-                    prim->verts[0].xyz[0], prim->verts[0].xyz[1]);
+      gl2ps->streamlength += gl2psPrintPDFLinePoint(prim->verts[0].xyz, "m");
 
       for(j = 1; j <= lastel; ++j){
         prev = prim;
@@ -4077,24 +4083,19 @@ static void gl2psPDFgroupListWriteMainStream(void)
              end point of the previous line, so we end the current
              path and start a new one */
           gl2ps->streamlength +=
-            gl2psPrintf("%f %f l\n",
-                        prev->verts[1].xyz[0], prev->verts[1].xyz[1]);
+            gl2psPrintPDFLinePoint(prev->verts[1].xyz, "l");
           gl2ps->streamlength +=
-            gl2psPrintf("%f %f m\n",
-                        prim->verts[0].xyz[0], prim->verts[0].xyz[1]);
+            gl2psPrintPDFLinePoint(prim->verts[0].xyz, "m");
         }
         else{
           /* the two segements are connected, so we just append to the
              current path */
           gl2ps->streamlength +=
-            gl2psPrintf("%f %f l\n",
-                        prim->verts[0].xyz[0], prim->verts[0].xyz[1]);
+            gl2psPrintPDFLinePoint(prim->verts[0].xyz, "l");
         }
       }
       /* end last path */
-      gl2ps->streamlength +=
-        gl2psPrintf("%f %f l\n",
-                    prim->verts[1].xyz[0], prim->verts[1].xyz[1]);
+      gl2ps->streamlength += gl2psPrintPDFLinePoint(prim->verts[1].xyz, "l");
       gl2ps->streamlength += gl2psPrintf("S\n");
       break;
     case GL2PS_TRIANGLE:
