@@ -504,6 +504,28 @@ static int gl2psPrintPair(long x, long y, int aftercmd)
   return gl2psPrintFixed(x, aftercmd) + gl2psPrintFixed(y, 0);
 }
 
+/* Rounds the corners of a triangle to hundredths, counterclockwise, so
+   that triangles filled as one path all wind one way; returns 0 when it
+   rounds to no area */
+static int gl2psFixedTriangle(const GLfloat *a, const GLfloat *b,
+                              const GLfloat *c, long x[3], long y[3])
+{
+  double area;
+  long t;
+
+  x[0] = gl2psFixed(a[0]); y[0] = gl2psFixed(a[1]);
+  x[1] = gl2psFixed(b[0]); y[1] = gl2psFixed(b[1]);
+  x[2] = gl2psFixed(c[0]); y[2] = gl2psFixed(c[1]);
+  area = (double)(x[1] - x[0]) * (double)(y[2] - y[0]) -
+    (double)(x[2] - x[0]) * (double)(y[1] - y[0]);
+  if(area == 0) return 0;
+  if(area < 0){
+    t = x[1]; x[1] = x[2]; x[2] = t;
+    t = y[1]; y[1] = y[2]; y[2] = t;
+  }
+  return 1;
+}
+
 static void gl2psPrintGzipHeader(void)
 {
 #if defined(GL2PS_HAVE_ZLIB)
@@ -5297,19 +5319,35 @@ static int gl2psSVGBeginRun(int kind, const char *style)
   return 1;
 }
 
+/* A triangle in one color, xyz already flipped to SVG coordinates, in
+   the run of its fill.  The triangles of a run all wind one way, so the
+   nonzero fill rule fills their union and their shared edges leave no
+   seams. */
 static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
 {
-  char col[32];
+  long x[3], y[3];
+  char col[32], style[256];
+
+  if(!gl2psFixedTriangle(xyz[0], xyz[1], xyz[2], x, y)) return;
 
   gl2psSVGGetColorString(rgba, col);
-  gl2psPrintf("<polygon fill=\"%s\" ", col);
-  if(rgba[3] < 1.0F) gl2psPrintf("fill-opacity=\"%g\" ", rgba[3]);
-  gl2psPrintf("shape-rendering=\"crispEdges\" ");
-  gl2psPrintf("points=\"");
-  gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 1);
-  gl2psPrintPair(gl2psFixed(xyz[1][0]), gl2psFixed(xyz[1][1]), 0);
-  gl2psPrintPair(gl2psFixed(xyz[2][0]), gl2psFixed(xyz[2][1]), 0);
-  gl2psPrintf("\"/>\n");
+  if(rgba[3] < 1.0F)
+    sprintf(style, "fill=\"%s\" fill-opacity=\"%g\" "
+            "shape-rendering=\"crispEdges\" ", col, rgba[3]);
+  else
+    sprintf(style, "fill=\"%s\" shape-rendering=\"crispEdges\" ", col);
+
+  /* overlapping transparent triangles blend each time, so each is a
+     path of its own, where a run would fill their union once */
+  if(rgba[3] < 1.0F)
+    gl2psSVGEndRun();
+  gl2psSVGBeginRun(1, style);
+  gl2psPrintf("M");
+  gl2psPrintPair(x[0], y[0], 1);
+  gl2psPrintf("L");
+  gl2psPrintPair(x[1], y[1], 1);
+  gl2psPrintPair(x[2], y[2], 0);
+  gl2psPrintf("z");
 }
 
 static void gl2psPrintSVGSmoothTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3],
@@ -5507,8 +5545,8 @@ static void gl2psPrintSVGPrimitive(void *data)
 
   if((gl2ps->options & GL2PS_OCCLUSION_CULL) && prim->culled) return;
 
-  /* Lines go into path runs; anything else ends the run */
-  if(prim->type != GL2PS_LINE) gl2psSVGEndRun();
+  /* Lines and triangles go into path runs; anything else ends the run */
+  if(prim->type != GL2PS_LINE && prim->type != GL2PS_TRIANGLE) gl2psSVGEndRun();
 
   gl2psSVGGetCoordsAndColors(prim->numverts, prim->verts, xyz, rgba);
 
