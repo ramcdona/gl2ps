@@ -5950,6 +5950,9 @@ static GL2PSbackend *gl2psbackends[] = {
  *
  * Lines and points are cut to the runs that pass the depth test.
  *
+ * Texts and images whose raster position is hidden go first, so that
+ * what is in front of them covers them.
+ *
  *********************************************************************/
 
 /* Size of the visibility buffer: at most this many samples, and at
@@ -6449,7 +6452,7 @@ static void gl2psRasterPrepare(void)
 static GLboolean gl2psRasterSort(void)
 {
   GL2PSraster *r;
-  GL2PSlist *lines, *sorted, *others;
+  GL2PSlist *lines, *sorted, *behind, *others;
   GL2PSprimitive *prim;
   GLint nprims, *opaque, *transp, *order, i, k;
   GLint nopaque = 0, ntransp = 0;
@@ -6543,9 +6546,11 @@ static GLboolean gl2psRasterSort(void)
   order = (GLint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLint));
   gl2psRasterOrder(opaque, nopaque, nprims, zmean, order);
 
-  /* lines cut to what is seen, the points that are seen, and the other
-     primitives */
+  /* lines cut to what is seen, the points that are seen, and texts and
+     images, ahead of everything when their raster position is hidden, so
+     that what is in front of it covers them */
   lines = gl2psListCreate(500, 500, sizeof(GL2PSprimitive*));
+  behind = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   others = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   for(i = 0; i < nprims; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
@@ -6559,16 +6564,26 @@ static GLboolean gl2psRasterSort(void)
         gl2psListAdd(others, &prim);
       }
     }
+    else if(prim->type == GL2PS_TEXT || prim->type == GL2PS_PIXMAP){
+      keep[i] = 1;
+      gl2psRasterToSample(&prim->verts[0], &x, &y);
+      if(gl2psRasterPointVisible(x, y, prim->verts[0].xyz[2]))
+        gl2psListAdd(others, &prim);
+      else
+        gl2psListAdd(behind, &prim);
+    }
     else if(prim->type != GL2PS_TRIANGLE){
       keep[i] = 1;
       gl2psListAdd(others, &prim);
     }
   }
 
-  /* the opaque triangles, the transparent ones in the order they came,
-     the lines, then everything else */
+  /* what is behind everything, the opaque triangles, the transparent
+     ones in the order they came, the lines, then everything else */
   sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
                            sizeof(GL2PSprimitive*));
+  for(i = 0; i < gl2psListNbr(behind); i++)
+    gl2psListAdd(sorted, gl2psListPointer(behind, i));
   for(i = 0; i < nopaque; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
   for(i = 0; i < ntransp; i++)
@@ -6577,6 +6592,7 @@ static GLboolean gl2psRasterSort(void)
     gl2psListAdd(sorted, gl2psListPointer(lines, i));
   for(i = 0; i < gl2psListNbr(others); i++)
     gl2psListAdd(sorted, gl2psListPointer(others, i));
+  gl2psListDelete(behind);
   gl2psListDelete(others);
 
   for(i = 0; i < nprims; i++)
