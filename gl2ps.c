@@ -5964,6 +5964,8 @@ static GL2PSbackend *gl2psbackends[] = {
  * Transparent triangles follow the opaque scene, in the order they came,
  * each cut to the part no opaque triangle hides, so that whatever is
  * behind it is tinted.
+ * The runs of a line seen through a transparent triangle go in before
+ * the transparent triangles.
  *
  *********************************************************************/
 
@@ -5983,6 +5985,9 @@ static GL2PSbackend *gl2psbackends[] = {
 #define GL2PS_RASTER_TEST        3 /* take the first sample where it passes
                                        the depth test */
 #define GL2PS_RASTER_OCCLUDERS   4 /* record the opaque triangle in front */
+#define GL2PS_RASTER_TWRITE      5 /* record it where it is the nearest
+                                       transparent face in front of the
+                                       opaque */
 
 typedef struct {
   int w, h;
@@ -5994,6 +5999,8 @@ typedef struct {
   GLint *stamp;   /* per primitive in front: the last one recorded behind */
   GLint *pairs;   /* (behind, in front) pairs from the footprint pass */
   int npairs, maxpairs;
+  GLfloat *tdepth; /* nearest transparent face in front of the opaque */
+  GLint *tid;
 } GL2PSraster;
 
 static GL2PSraster *gl2psRaster = NULL;
@@ -6169,6 +6176,12 @@ static int gl2psRasterTriangle(GL2PSprimitive *prim, GLint idx, int mode)
            GL2PS_RASTER_CONST_TOL)
           gl2psRasterAddPair(idx, front);
         break;
+      case GL2PS_RASTER_TWRITE :
+        if(zs < r->depth[k] && zs < r->tdepth[k]){
+          r->tdepth[k] = zs;
+          r->tid[k] = idx;
+        }
+        break;
       }
       found = 1;
     }
@@ -6225,8 +6238,27 @@ static GL2PSprimitive *gl2psRasterSubLine(GL2PSprimitive *prim, GLfloat t0,
   return sub;
 }
 
-/* Adds to seen the runs of a line that pass the depth test */
-static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen)
+/* 1 when a transparent triangle of the depth and id buffers given is in
+   front of the point at sample position (x, y) and depth z */
+static int gl2psRasterUnderTransparent(const GLfloat *depth, const GLint *id,
+                                       GLfloat x, GLfloat y, GLfloat z)
+{
+  GL2PSraster *r = gl2psRaster;
+  int k;
+  GLint front;
+
+  if(!id || !(x >= 0.0F && y >= 0.0F && x < r->w && y < r->h)) return 0;
+  k = (int)y * r->w + (int)x;
+  front = id[k];
+  if(front < 0) return 0;
+  return (depth[k] < z - GL2PS_RASTER_SLOPE_TOL * r->slope[front] -
+          GL2PS_RASTER_CONST_TOL);
+}
+
+/* Adds to seen the runs of a line that pass the depth test, or to under
+   where a transparent triangle is in front of them */
+static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen,
+                                GL2PSlist *under)
 {
   GLfloat x0, y0, x1, y1, x, y, len, t, z;
   int n, k, start = -1, state, runstate = 0;
@@ -6242,7 +6274,7 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen)
   n = (int)ceil(len);
   if(n < 1) n = 1;
 
-  /* state 0 hidden, 1 seen */
+  /* state 0 hidden, 1 seen, 2 seen through a transparent face */
   for(k = 0; k <= n; k++){
     state = 0;
     if(k < n){
@@ -6253,6 +6285,9 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen)
       y = y0 + t * (y1 - y0);
       if(gl2psRasterPointVisible(x, y, z)){
         state = 1;
+        if(gl2psRasterUnderTransparent(gl2psRaster->tdepth, gl2psRaster->tid,
+                                       x, y, z))
+          state = 2;
       }
     }
     if(start >= 0 && state != runstate){
@@ -6263,7 +6298,8 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen)
         sub = gl2psRasterSubLine(prim, (GLfloat)start / (GLfloat)n,
                                  (GLfloat)k / (GLfloat)n);
       }
-      gl2psListAdd(seen, &sub);
+      if(runstate == 2) gl2psListAdd(under, &sub);
+      else gl2psListAdd(seen, &sub);
       start = -1;
     }
     if(state && start < 0){
@@ -7225,6 +7261,8 @@ static void gl2psRasterFree(void)
   gl2psFree(gl2psRaster->covered);
   gl2psFree(gl2psRaster->stamp);
   gl2psFree(gl2psRaster->pairs);
+  gl2psFree(gl2psRaster->tdepth);
+  gl2psFree(gl2psRaster->tid);
   gl2psFree(gl2psRaster);
   gl2psRaster = NULL;
 }
@@ -7271,7 +7309,7 @@ static void gl2psRasterPrepare(void)
 static GLboolean gl2psRasterSort(GLboolean cut)
 {
   GL2PSraster *r;
-  GL2PSlist *lines, *sorted, *behind, *others;
+  GL2PSlist *lines, *sorted, *behind, *others, *under;
   GL2PSprimitive *prim;
   GLint nprims, *opaque, *transp, *order, *color, i, k;
   GLint nopaque = 0, ntransp = 0, nclass = 0;
@@ -7310,6 +7348,8 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   r->stamp = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
   r->pairs = NULL;
   r->npairs = r->maxpairs = 0;
+  r->tdepth = NULL;
+  r->tid = NULL;
   if(!r->depth || !r->id || !r->slope || !r->covered || !r->stamp){
     gl2psRasterFree();
     return GL_FALSE;
@@ -7395,16 +7435,41 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   order = (GLint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLint));
   gl2psRasterOrder(opaque, nopaque, nprims, zmean, color, nclass, order);
 
+  /* the nearest transparent faces in front of the opaque, at each
+     sample, for the lines */
+  if(ntransp > 0){
+    r->tdepth = (GLfloat*)gl2psMalloc(nsamples * sizeof(GLfloat));
+    r->tid = (GLint*)gl2psMalloc(nsamples * sizeof(GLint));
+    if(!r->tdepth || !r->tid){
+      /* without them the lines go over the transparent triangles */
+      gl2psFree(r->tdepth);
+      gl2psFree(r->tid);
+      r->tdepth = NULL;
+      r->tid = NULL;
+    }
+    else{
+      for(k = 0; k < (GLint)nsamples; k++){
+        r->tdepth[k] = FLT_MAX;
+        r->tid[k] = -1;
+      }
+      for(i = 0; i < ntransp; i++)
+        gl2psRasterTriangle(*(GL2PSprimitive**)gl2psListPointer
+                            (gl2ps->primitives, transp[i]),
+                            transp[i], GL2PS_RASTER_TWRITE);
+    }
+  }
+
   /* lines cut to what is seen, the points that are seen, and texts and
      images, ahead of everything when their raster position is hidden, so
      that what is in front of it covers them */
   lines = gl2psListCreate(500, 500, sizeof(GL2PSprimitive*));
+  under = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   behind = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   others = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   for(i = 0; i < nprims; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
     if(prim->type == GL2PS_LINE){
-      gl2psRasterClipLine(prim, lines);
+      gl2psRasterClipLine(prim, lines, under);
     }
     else if(prim->type == GL2PS_POINT){
       gl2psRasterToSample(&prim->verts[0], &x, &y);
@@ -7427,15 +7492,17 @@ static GLboolean gl2psRasterSort(GLboolean cut)
     }
   }
 
-  /* what is behind everything, the opaque triangles, the transparent
-     ones in the order they came, cut to what the opaque leave seen, the
-     lines, then everything else */
+  /* as OpenGL draws them: what is behind everything; the opaque
+     triangles; the lines seen through a transparent face; the
+     transparent faces in the order they came, cut to what the opaque
+     leave seen; the other lines, then everything else */
   sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
                            sizeof(GL2PSprimitive*));
   for(i = 0; i < gl2psListNbr(behind); i++)
     gl2psListAdd(sorted, gl2psListPointer(behind, i));
   for(i = 0; i < nopaque; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
+  gl2psRasterChainLines(under, sorted);
   for(i = 0; i < ntransp; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, transp[i]);
     if(gl2psRasterClipTransparent(prim, transp[i], sorted))
@@ -7452,6 +7519,7 @@ static GLboolean gl2psRasterSort(GLboolean cut)
 
   gl2psListDelete(gl2ps->primitives);
   gl2psListDelete(lines);
+  gl2psListDelete(under);
   gl2ps->primitives = sorted;
 
   gl2psFree(zmean);
