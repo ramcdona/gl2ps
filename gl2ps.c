@@ -240,6 +240,10 @@ typedef struct {
   int svgrun;
   char svgstyle[256];
   GL2PSxyz svgend;
+
+  /* the triangle a primitive is a piece of, under the raster sort, and
+     that of the open run; -1 for none */
+  int svggroup, svgrungroup;
 } GL2PScontext;
 
 typedef struct {
@@ -5338,10 +5342,13 @@ static void gl2psPrintSVGFlatTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba)
     sprintf(style, "fill=\"%s\" shape-rendering=\"crispEdges\" ", col);
 
   /* overlapping transparent triangles blend each time, so each is a
-     path of its own, where a run would fill their union once */
-  if(rgba[3] < 1.0F)
+     path of its own, where a run would fill their union once; only the
+     pieces of one triangle, which do not overlap, share a path */
+  if(rgba[3] < 1.0F &&
+     (gl2ps->svggroup < 0 || gl2ps->svggroup != gl2ps->svgrungroup))
     gl2psSVGEndRun();
   gl2psSVGBeginRun(1, style);
+  gl2ps->svgrungroup = gl2ps->svggroup;
   gl2psPrintf("M");
   gl2psPrintPair(x[0], y[0], 1);
   gl2psPrintf("L");
@@ -5547,6 +5554,10 @@ static void gl2psPrintSVGPrimitive(void *data)
 
   /* Lines and triangles go into path runs; anything else ends the run */
   if(prim->type != GL2PS_LINE && prim->type != GL2PS_TRIANGLE) gl2psSVGEndRun();
+
+  gl2ps->svggroup = -1;
+  if(gl2ps->sort == GL2PS_RASTER_SORT && prim->type == GL2PS_TRIANGLE)
+    gl2ps->svggroup = prim->sortid;
 
   gl2psSVGGetCoordsAndColors(prim->numverts, prim->verts, xyz, rgba);
 
@@ -7028,6 +7039,7 @@ static void gl2psRasterCut(GL2PSprimitive *prim, GL2PSplane *planes, int n,
   }
   for(j = 0; j < gl2psListNbr(pieces); j++){
     piece = *(GL2PSprimitive**)gl2psListPointer(pieces, j);
+    piece->sortid = prim->sortid;
     gl2psListAdd(list, &piece);
   }
   gl2psListDelete(pieces);
@@ -7450,6 +7462,13 @@ static GLboolean gl2psRasterSort(GLboolean cut)
 
   nprims = gl2psListNbr(gl2ps->primitives);
   if(!nprims) return GL_TRUE;
+
+  /* number each primitive; the pieces cut from one keep its number, so
+     a writer can draw them as one */
+  if(cut){
+    for(i = 0; i < nprims; i++)
+      (*(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i))->sortid = i;
+  }
 
   vw = (GLfloat)gl2ps->viewport[2];
   vh = (GLfloat)gl2ps->viewport[3];
@@ -8020,6 +8039,8 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   gl2ps->tex_scaling = 1.;
   gl2ps->svgrun = 0;
   gl2ps->svgstyle[0] = '\0';
+  gl2ps->svggroup = -1;
+  gl2ps->svgrungroup = -1;
   gl2ps->frontfaces = GL_FALSE;
 
   return GL2PS_SUCCESS;
