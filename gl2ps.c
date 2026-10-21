@@ -235,8 +235,10 @@ typedef struct {
   /* for TEX scaling */
   GLfloat tex_scaling;
 
-  /* the kind of the open PostScript run of triangles, 0 for none */
+  /* the kind of the open PostScript run of triangles, 0 for none, and
+     the start of the last triangle of a filled run, in hundredths */
   int psrun;
+  long pscur[2];
 
   /* the kind of the open SVG path run, 0 for none, its style, and where
      its last line ended */
@@ -2967,6 +2969,7 @@ static void gl2psPrintPostScriptHeader(void)
               "/T  { newpath moveto lineto lineto closepath fill } BD\n"
               "/TS { newpath moveto lineto lineto closepath } BD\n"
               "/TP { moveto lineto lineto closepath } BD\n"
+              "/TR { rmoveto rlineto rlineto closepath } BD\n"
               "/F  { fill } BD\n");
 
   /* Smooth-shaded triangle with PostScript level 3 shfill operator:
@@ -3292,15 +3295,22 @@ static void gl2psPrintPostScriptPrimitive(void *data)
          !gl2psSameColor(gl2ps->lastrgba, prim->verts[0].rgba))
         gl2psEndPostScriptRun();
       gl2psPrintPostScriptColor(prim->verts[0].rgba);
-      for(i = 2; i >= 0; i--)
-        gl2psPrintPair(x[i], y[i], i == 2);
       if(!gl2ps->psrun){
+        for(i = 2; i >= 0; i--)
+          gl2psPrintPair(x[i], y[i], i == 2);
         gl2psPrintf(" TS\n");
         gl2ps->psrun = 1;
       }
       else{
-        gl2psPrintf(" TP\n");
+        /* each corner from the one before, the first from the start of
+           the triangle before, where its closepath left the point */
+        gl2psPrintPair(x[2] - x[1], y[2] - y[1], 1);
+        gl2psPrintPair(x[1] - x[0], y[1] - y[0], 0);
+        gl2psPrintPair(x[0] - gl2ps->pscur[0], y[0] - gl2ps->pscur[1], 0);
+        gl2psPrintf(" TR\n");
       }
+      gl2ps->pscur[0] = x[0];
+      gl2ps->pscur[1] = y[0];
     }
     break;
   case GL2PS_QUADRANGLE :
