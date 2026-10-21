@@ -5951,6 +5951,7 @@ static GL2PSbackend *gl2psbackends[] = {
  * first, so that runs of one color stay together.
  *
  * Lines and points are cut to the runs that pass the depth test.
+ * The lines of one style are joined end to start into chains.
  *
  * Texts and images whose raster position is hidden go first, so that
  * what is in front of them covers them.
@@ -6484,6 +6485,203 @@ static void gl2psRasterOrder(GLint *tris, int n, GLint nprims,
   gl2psFree(done);
 }
 
+/* Lines that print alike: same colors, width, caps, joins and stipple */
+static int gl2psRasterCompareLineStyle(const void *a, const void *b)
+{
+  const GL2PSprimitive *p = *(const GL2PSprimitive* const*)a;
+  const GL2PSprimitive *q = *(const GL2PSprimitive* const*)b;
+  int v, c;
+
+  for(v = 0; v < 2; v++){
+    for(c = 0; c < 4; c++){
+      if(p->verts[v].rgba[c] < q->verts[v].rgba[c]) return -1;
+      if(p->verts[v].rgba[c] > q->verts[v].rgba[c]) return 1;
+    }
+  }
+  if(p->width < q->width) return -1;
+  if(p->width > q->width) return 1;
+  if(p->linecap < q->linecap) return -1;
+  if(p->linecap > q->linecap) return 1;
+  if(p->linejoin < q->linejoin) return -1;
+  if(p->linejoin > q->linejoin) return 1;
+  if(p->pattern < q->pattern) return -1;
+  if(p->pattern > q->pattern) return 1;
+  if(p->factor < q->factor) return -1;
+  if(p->factor > q->factor) return 1;
+  return 0;
+}
+
+static int gl2psRasterCompareLineOrder(const void *a, const void *b)
+{
+  const GL2PSprimitive *p = *(const GL2PSprimitive* const*)a;
+  const GL2PSprimitive *q = *(const GL2PSprimitive* const*)b;
+  int c = gl2psRasterCompareLineStyle(a, b);
+
+  if(c) return c;
+  if(p->sortid < q->sortid) return -1;
+  return 1;
+}
+
+static int gl2psRasterComparePoints(const GLfloat *p, const GLfloat *q)
+{
+  int c;
+
+  for(c = 0; c < 3; c++){
+    if(p[c] < q[c]) return -1;
+    if(p[c] > q[c]) return 1;
+  }
+  return 0;
+}
+
+/* A line end: its point, and which line and end it is */
+typedef struct {
+  GLfloat xyz[3];
+  GLint line, end;
+} GL2PSlineend;
+
+static int gl2psRasterCompareEnds(const void *a, const void *b)
+{
+  const GL2PSlineend *p = (const GL2PSlineend*)a, *q = (const GL2PSlineend*)b;
+  int c = gl2psRasterComparePoints(p->xyz, q->xyz);
+
+  if(c) return c;
+  if(p->line < q->line) return -1;
+  if(p->line > q->line) return 1;
+  if(p->end < q->end) return -1;
+  return 1;
+}
+
+static void gl2psRasterFlipLine(GL2PSprimitive *prim)
+{
+  GL2PSvertex v = prim->verts[0];
+
+  prim->verts[0] = prim->verts[1];
+  prim->verts[1] = v;
+}
+
+/* The unused line with an end at ends[k]'s point, or -1; sets *end */
+static GLint gl2psRasterNextLine(GL2PSlineend *ends, int nends, const GLint *at,
+                                 const char *used, GLint line, GLint end,
+                                 GLint *nextend)
+{
+  int k = at[2 * line + end], j;
+
+  for(j = k; j >= 0 && !gl2psRasterComparePoints(ends[j].xyz, ends[k].xyz);
+      j--){
+    if(!used[ends[j].line]){ *nextend = ends[j].end; return ends[j].line; }
+  }
+  for(j = k + 1; j < nends &&
+        !gl2psRasterComparePoints(ends[j].xyz, ends[k].xyz); j++){
+    if(!used[ends[j].line]){ *nextend = ends[j].end; return ends[j].line; }
+  }
+  return -1;
+}
+
+/* Adds the n lines of one style in prims to out, joined end to start
+   into chains, so a writer can print a chain as one polyline */
+static void gl2psRasterChainStyle(GL2PSprimitive **prims, int n, GL2PSlist *out)
+{
+  GL2PSprimitive *prim;
+  GL2PSlineend *ends;
+  GLint *at, *back, i, k, nback, cur, curend, next, nextend;
+  char *used;
+
+  ends = (GL2PSlineend*)gl2psMalloc(2 * (size_t)n * sizeof(GL2PSlineend));
+  at = (GLint*)gl2psMalloc(2 * (size_t)n * sizeof(GLint));
+  back = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  used = (char*)gl2psMalloc((size_t)n + 1);
+  for(i = 0; i < n; i++){
+    for(k = 0; k < 2; k++){
+      memcpy(ends[2 * i + k].xyz, prims[i]->verts[k].xyz, sizeof(GL2PSxyz));
+      ends[2 * i + k].line = i;
+      ends[2 * i + k].end = k;
+    }
+    used[i] = 0;
+  }
+  qsort(ends, 2 * n, sizeof(GL2PSlineend), gl2psRasterCompareEnds);
+  for(k = 0; k < 2 * n; k++)
+    at[2 * ends[k].line + ends[k].end] = k;
+
+  for(i = 0; i < n; i++){
+    if(used[i]) continue;
+    used[i] = 1;
+
+    /* backward from the start, kept to be written in reverse */
+    nback = 0;
+    cur = i; curend = 0;
+    while((next = gl2psRasterNextLine(ends, 2 * n, at, used, cur, curend,
+                                      &nextend)) >= 0){
+      used[next] = 1;
+      /* it must end where the chain starts */
+      if(nextend == 0) gl2psRasterFlipLine(prims[next]);
+      back[nback++] = next;
+      cur = next; curend = 1 - nextend;
+    }
+    for(k = nback - 1; k >= 0; k--){
+      prim = prims[back[k]];
+      gl2psListAdd(out, &prim);
+    }
+
+    prim = prims[i];
+    gl2psListAdd(out, &prim);
+
+    /* forward from the end */
+    cur = i; curend = 1;
+    while((next = gl2psRasterNextLine(ends, 2 * n, at, used, cur, curend,
+                                      &nextend)) >= 0){
+      used[next] = 1;
+      if(nextend == 1) gl2psRasterFlipLine(prims[next]);
+      prim = prims[next];
+      gl2psListAdd(out, &prim);
+      cur = next; curend = 1 - nextend;
+    }
+  }
+
+  gl2psFree(ends);
+  gl2psFree(at);
+  gl2psFree(back);
+  gl2psFree(used);
+}
+
+/* Adds the lines in list to out grouped by style, each style chained.
+   The styles go in the order of their last lines, so a line drawn over a
+   coincident one of another style stays on top. */
+static void gl2psRasterChainLines(GL2PSlist *lines, GL2PSlist *out)
+{
+  GL2PSprimitive **prims;
+  GLint *group, *byend;
+  int n = gl2psListNbr(lines), i, j, k, ngroup = 0;
+
+  if(!n) return;
+  gl2psListAssignSortIds(lines);
+  gl2psListSort(lines, gl2psRasterCompareLineOrder);
+  prims = (GL2PSprimitive**)gl2psListPointer(lines, 0);
+
+  /* group starts, then the groups by their last line */
+  group = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  byend = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  for(i = 0; i < n; i = j){
+    for(j = i + 1;
+        j < n && !gl2psRasterCompareLineStyle(&prims[i], &prims[j]); j++);
+    group[ngroup++] = i;
+  }
+  group[ngroup] = n;
+  for(k = 0; k < ngroup; k++) byend[k] = k;
+  for(k = 1; k < ngroup; k++){
+    j = byend[k];
+    for(i = k - 1; i >= 0 && prims[group[byend[i] + 1] - 1]->sortid >
+          prims[group[j + 1] - 1]->sortid; i--)
+      byend[i + 1] = byend[i];
+    byend[i + 1] = j;
+  }
+  for(k = 0; k < ngroup; k++){
+    i = byend[k];
+    gl2psRasterChainStyle(prims + group[i], group[i + 1] - group[i], out);
+  }
+  gl2psFree(group);
+  gl2psFree(byend);
+}
+
 static void gl2psRasterFree(void)
 {
   if(!gl2psRaster) return;
@@ -6692,8 +6890,7 @@ static GLboolean gl2psRasterSort(void)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
   for(i = 0; i < ntransp; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, transp[i]));
-  for(i = 0; i < gl2psListNbr(lines); i++)
-    gl2psListAdd(sorted, gl2psListPointer(lines, i));
+  gl2psRasterChainLines(lines, sorted);
   for(i = 0; i < gl2psListNbr(others); i++)
     gl2psListAdd(sorted, gl2psListPointer(others, i));
   gl2psListDelete(behind);
