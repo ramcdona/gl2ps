@@ -5434,8 +5434,21 @@ static int gl2psPrintSVGGradientTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3])
   g2 = gx * gx + gy * gy;
   if(g2 <= 0.0F) return 0;
 
+  /* a piece of the triangle the open gradient path was made for shares
+     its gradient and its path */
+  if(gl2ps->svggroup >= 0 && gl2ps->svgrun == 3 &&
+     gl2ps->svggroup == gl2ps->svgrungroup){
+    gl2psPrintf("M");
+    gl2psPrintPair(x[0], y[0], 1);
+    gl2psPrintf("L");
+    gl2psPrintPair(x[1], y[1], 1);
+    gl2psPrintPair(x[2], y[2], 0);
+    gl2psPrintf("z");
+    return 1;
+  }
+
   /* the stops end the widest range of s over which the colors stay in
-     [0,1] */
+     [0,1], so that every piece of the triangle falls between them */
   slo = -1.0e30F;
   shi = 1.0e30F;
   for(c = 0; c < 3; c++){
@@ -5476,6 +5489,7 @@ static int gl2psPrintSVGGradientTriangle(GL2PSxyz xyz[3], GL2PSrgba rgba[3])
   gl2psPrintf("z");
   gl2ps->svgrun = 3;
   gl2ps->svgstyle[0] = '\0';
+  gl2ps->svgrungroup = gl2ps->svggroup;
   gl2ps->svggradients++;
   return 1;
 }
