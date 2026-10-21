@@ -5952,6 +5952,7 @@ static GL2PSbackend *gl2psbackends[] = {
  *
  * Lines and points are cut to the runs that pass the depth test.
  * The lines of one style are joined end to start into chains.
+ * Each line goes out once.
  *
  * Texts and images whose raster position is hidden go first, so that
  * what is in front of them covers them.
@@ -6551,6 +6552,61 @@ static int gl2psRasterCompareEnds(const void *a, const void *b)
   return 1;
 }
 
+/* The ends of a line in order: lower point first */
+static void gl2psRasterLineKey(GL2PSprimitive *prim, const GLfloat **lo,
+                               const GLfloat **hi)
+{
+  if(gl2psRasterComparePoints(prim->verts[0].xyz, prim->verts[1].xyz) <= 0){
+    *lo = prim->verts[0].xyz; *hi = prim->verts[1].xyz;
+  }
+  else{
+    *lo = prim->verts[1].xyz; *hi = prim->verts[0].xyz;
+  }
+}
+
+static int gl2psRasterCompareLineGeometry(const void *a, const void *b)
+{
+  GL2PSprimitive *p = *(GL2PSprimitive* const*)a;
+  GL2PSprimitive *q = *(GL2PSprimitive* const*)b;
+  const GLfloat *plo, *phi, *qlo, *qhi;
+  int c;
+
+  gl2psRasterLineKey(p, &plo, &phi);
+  gl2psRasterLineKey(q, &qlo, &qhi);
+  c = gl2psRasterComparePoints(plo, qlo);
+  if(c) return c;
+  return gl2psRasterComparePoints(phi, qhi);
+}
+
+/* Frees the lines among the n in prims that repeat another, ends either
+   way round, and closes up prims; returns how many are left */
+static int gl2psRasterDropDuplicates(GL2PSprimitive **prims, int n)
+{
+  GL2PSprimitive **geo;
+  int i, k, m = 0;
+
+  geo = (GL2PSprimitive**)gl2psMalloc((size_t)n * sizeof(GL2PSprimitive*));
+  for(i = 0; i < n; i++) geo[i] = prims[i];
+  qsort(geo, n, sizeof(GL2PSprimitive*), gl2psRasterCompareLineGeometry);
+  for(i = 0; i < n; i++){
+    if(i > 0 && !gl2psRasterCompareLineGeometry(&geo[i], &geo[m - 1])){
+      geo[i]->culled = 1;
+      continue;
+    }
+    geo[m++] = geo[i];
+  }
+  gl2psFree(geo);
+  for(i = 0, k = 0; i < n; i++){
+    if(prims[i]->culled){
+      gl2psFreePrimitive(&prims[i]);
+    }
+    else{
+      prims[k++] = prims[i];
+    }
+  }
+  return k;
+}
+
 static void gl2psRasterFlipLine(GL2PSprimitive *prim)
 {
   GL2PSvertex v = prim->verts[0];
@@ -6585,6 +6641,8 @@ static void gl2psRasterChainStyle(GL2PSprimitive **prims, int n, GL2PSlist *out)
   GL2PSlineend *ends;
   GLint *at, *back, i, k, nback, cur, curend, next, nextend;
   char *used;
+
+  n = gl2psRasterDropDuplicates(prims, n);
 
   ends = (GL2PSlineend*)gl2psMalloc(2 * (size_t)n * sizeof(GL2PSlineend));
   at = (GLint*)gl2psMalloc(2 * (size_t)n * sizeof(GLint));
