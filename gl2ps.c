@@ -240,6 +240,9 @@ typedef struct {
   int psrun;
   long pscur[2];
 
+  /* the number of triangles in the open PostScript shading */
+  int psshaded;
+
   /* the kind of the open SVG path run, 0 for none, its style, and where
      its last line ended */
   int svgrun;
@@ -2921,7 +2924,7 @@ static void gl2psPrintPostScriptHeader(void)
      Smooth-shaded triangle: x3 y3 r3 g3 b3 x2 y2 r2 g2 b2 x1 y1 r1 g1 b1 ST */
 
   gl2psPrintf("%%%%BeginProlog\n"
-              "/gl2psdict 64 dict def gl2psdict begin\n"
+              "/gl2psdict 96 dict def gl2psdict begin\n"
               "/tryPS3shading %s def %% set to false to force subdivision\n"
               "/rThreshold %g def %% red component subdivision threshold\n"
               "/gThreshold %g def %% green component subdivision threshold\n"
@@ -3072,6 +3075,27 @@ static void gl2psPrintPostScriptHeader(void)
               "{ /ST { STnoshfill } BD }\n"
               "ifelse\n");
 
+  /* Smooth-shaded triangles, each as ST takes it, in one array:
+        [ x3 y3 r3 g3 b3 x2 y2 r2 g2 b2 x1 y1 r1 g1 b1 ... ] SM
+     drawn as one shading with shfill, or one at a time with STnoshfill */
+
+  gl2psPrintf("/SMshfill { /SMa exch def\n"
+              "      gsave << /ShadingType 4 /ColorSpace [/DeviceRGB]\n"
+              "      /DataSource [ 0 15 SMa length 1 sub\n"
+              "      { SMa exch 15 getinterval aload pop\n"
+              "        0 16 1 roll 0 11 1 roll 0 6 1 roll } for ] >>\n"
+              "      shfill grestore } BD\n"
+              "/SMnoshfill { /SMa exch def\n"
+              "      0 15 SMa length 1 sub\n"
+              "      { SMa exch 15 getinterval aload pop STnoshfill } for } BD\n"
+              "tryPS3shading\n"
+              "{ /shfill where\n"
+              "  { pop /SM { SMshfill } BD }\n"
+              "  { /SM { SMnoshfill } BD }\n"
+              "  ifelse }\n"
+              "{ /SM { SMnoshfill } BD }\n"
+              "ifelse\n");
+
   gl2psPrintf("end\n"
               "%%%%EndProlog\n"
               "%%%%BeginSetup\n"
@@ -3115,11 +3139,20 @@ static void gl2psResetPostScriptColor(void)
   gl2ps->lastrgba[0] = gl2ps->lastrgba[1] = gl2ps->lastrgba[2] = -1.;
 }
 
-/* Triangles of one color in a row are filled as one path, a run */
+/* Most triangles in one PostScript shading: its data source holds 18
+   numbers a triangle and its array is built on the operand stack, so a
+   run is kept well below the array limit of 65535 elements and modest
+   stack depths */
+#define GL2PS_PS_MAX_SHADED 256
+
+/* Triangles of one color in a row are filled as one path, a run, and
+   smooth shaded triangles in a row are drawn as one shading */
 static void gl2psEndPostScriptRun(void)
 {
   if(gl2ps->psrun == 1)
     gl2psPrintf("F\n");
+  else if(gl2ps->psrun == 2)
+    gl2psPrintf("] SM\n");
   gl2ps->psrun = 0;
 }
 
@@ -3277,15 +3310,21 @@ static void gl2psPrintPostScriptPrimitive(void *data)
     break;
   case GL2PS_TRIANGLE :
     if(!gl2psVertsSameColor(prim)){
-      gl2psEndPostScriptRun();
-      gl2psResetPostScriptColor();
+      if(gl2ps->psrun != 2 || gl2ps->psshaded >= GL2PS_PS_MAX_SHADED){
+        gl2psEndPostScriptRun();
+        gl2psResetPostScriptColor();
+        gl2psPrintf("[\n");
+        gl2ps->psrun = 2;
+        gl2ps->psshaded = 0;
+      }
       for(i = 2; i >= 0; i--){
         gl2psPrintPair(gl2psFixed(prim->verts[i].xyz[0]),
                        gl2psFixed(prim->verts[i].xyz[1]), i == 2);
         gl2psPrintf(" %g %g %g", prim->verts[i].rgba[0],
                     prim->verts[i].rgba[1], prim->verts[i].rgba[2]);
       }
-      gl2psPrintf(" ST\n");
+      gl2psPrintf("\n");
+      gl2ps->psshaded++;
     }
     else{
       if(!gl2psFixedTriangle(prim->verts[0].xyz, prim->verts[1].xyz,
