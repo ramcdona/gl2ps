@@ -3110,7 +3110,9 @@ static void gl2psEndPostScriptLine(void)
 {
   int i;
   if(gl2ps->lastvertex.rgba[0] >= 0.){
-    gl2psPrintf("%g %g LE\n", gl2ps->lastvertex.xyz[0], gl2ps->lastvertex.xyz[1]);
+    gl2psPrintPair(gl2psStrokeFixed(gl2ps->lastvertex.xyz[0]),
+                   gl2psStrokeFixed(gl2ps->lastvertex.xyz[1]), 1);
+    gl2psPrintf(" LE\n");
     for(i = 0; i < 3; i++)
       gl2ps->lastvertex.xyz[i] = -1.;
     for(i = 0; i < 4; i++)
@@ -3181,7 +3183,7 @@ static int gl2psPrintPostScriptDash(GLushort pattern, GLint factor, const char *
 
 static void gl2psPrintPostScriptPrimitive(void *data)
 {
-  int newline;
+  int newline, i;
   GL2PSprimitive *prim;
 
   prim = *(GL2PSprimitive**)data;
@@ -3249,29 +3251,28 @@ static void gl2psPrintPostScriptPrimitive(void *data)
     }
     gl2psPrintPostScriptDash(prim->pattern, prim->factor, "setdash");
     gl2psPrintPostScriptColor(prim->verts[0].rgba);
-    gl2psPrintf("%g %g %s\n", prim->verts[0].xyz[0], prim->verts[0].xyz[1],
-                newline ? "LS" : "L");
+    gl2psPrintPair(gl2psStrokeFixed(prim->verts[0].xyz[0]),
+                   gl2psStrokeFixed(prim->verts[0].xyz[1]), 1);
+    gl2psPrintf(newline ? " LS\n" : " L\n");
     gl2ps->lastvertex = prim->verts[1];
     break;
   case GL2PS_TRIANGLE :
     if(!gl2psVertsSameColor(prim)){
       gl2psResetPostScriptColor();
-      gl2psPrintf("%g %g %g %g %g %g %g %g %g %g %g %g %g %g %g ST\n",
-                  prim->verts[2].xyz[0], prim->verts[2].xyz[1],
-                  prim->verts[2].rgba[0], prim->verts[2].rgba[1],
-                  prim->verts[2].rgba[2], prim->verts[1].xyz[0],
-                  prim->verts[1].xyz[1], prim->verts[1].rgba[0],
-                  prim->verts[1].rgba[1], prim->verts[1].rgba[2],
-                  prim->verts[0].xyz[0], prim->verts[0].xyz[1],
-                  prim->verts[0].rgba[0], prim->verts[0].rgba[1],
-                  prim->verts[0].rgba[2]);
+      for(i = 2; i >= 0; i--){
+        gl2psPrintPair(gl2psFixed(prim->verts[i].xyz[0]),
+                       gl2psFixed(prim->verts[i].xyz[1]), i == 2);
+        gl2psPrintf(" %g %g %g", prim->verts[i].rgba[0],
+                    prim->verts[i].rgba[1], prim->verts[i].rgba[2]);
+      }
+      gl2psPrintf(" ST\n");
     }
     else{
       gl2psPrintPostScriptColor(prim->verts[0].rgba);
-      gl2psPrintf("%g %g %g %g %g %g T\n",
-                  prim->verts[2].xyz[0], prim->verts[2].xyz[1],
-                  prim->verts[1].xyz[0], prim->verts[1].xyz[1],
-                  prim->verts[0].xyz[0], prim->verts[0].xyz[1]);
+      for(i = 2; i >= 0; i--)
+        gl2psPrintPair(gl2psFixed(prim->verts[i].xyz[0]),
+                       gl2psFixed(prim->verts[i].xyz[1]), i == 2);
+      gl2psPrintf(" T\n");
     }
     break;
   case GL2PS_QUADRANGLE :
