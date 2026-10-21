@@ -702,6 +702,42 @@ GLint gl2psBlendFunc( GLenum sfactor, GLenum dfactor )
 
 % -------------------------------------------------------------------------
 
+\subsection{\texttt{gl2psSetPageScale}}
+\label{sec:gl2psSetPageScale}
+
+\subsubsection{Specification}
+
+\begin{verbatim}
+GLint gl2psSetPageScale( GLfloat scale )
+\end{verbatim}
+
+\subsubsection{Description and arguments}
+
+\dd{gl2psSetPageScale} sets the size on the page, in points, of one unit
+(pixel) of the viewport, 1 by default, for PostScript, EPS, PDF and SVG
+output. Everything drawn is scaled alike, line widths and texts
+included, and so is the page, or the tight bounding box with
+\dd{GL2PS_TIGHT_BOUNDING_BOX}. For example, a scale of 432 divided by the
+width of the viewport in pixels fits the drawing to a page 6 inches
+wide. Coordinates are written to hundredths of a unit of the viewport (to
+tenths for lines), so their precision on the page scales with it. It must
+be called after \dd{gl2psBeginPage} and before the page starts, i.e.,
+before the first call to \dd{gl2psBeginViewport}, \dd{gl2psEndViewport} or
+\dd{gl2psEndPage}. The scale must be between $10^{-4}$ and $10^4$. It is
+ignored for \LaTeX\ and PGF output.
+
+\subsubsection{Return value}
+
+\noindent\dd{gl2psSetPageScale} returns:
+\begin{description}
+\item[\dd{GL2PS_UNINITIALIZED}] if the library is not initialized;
+\item[\dd{GL2PS_ERROR}] if the page has started or the scale is out of
+  range;
+\item[\dd{GL2PS_SUCCESS}] otherwise.
+\end{description}
+
+% -------------------------------------------------------------------------
+
 \subsection{\texttt{gl2psBeginViewport} and \texttt{gl2psEndViewport}}
 \label{sec:gl2psBeginViewport}
 

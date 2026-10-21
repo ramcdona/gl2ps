@@ -235,6 +235,9 @@ typedef struct {
   /* for TEX scaling */
   GLfloat tex_scaling;
 
+  /* points on the page per unit of the viewport */
+  GLfloat page_scale;
+
   /* the kind of the open PostScript run of triangles, 0 for none, and
      the start of the last triangle of a filled run, in hundredths */
   int psrun;
@@ -480,6 +483,18 @@ static int gl2psPrintf(const char* fmt, ...)
   }
 #endif
   return ret;
+}
+
+/* A coordinate of the viewport on the page, rounded down for a lower
+   corner and up for an upper one, so the page holds what is drawn */
+static GLint gl2psPageLow(GLint v)
+{
+  return (GLint)floor((double)v * gl2ps->page_scale);
+}
+
+static GLint gl2psPageHigh(GLint v)
+{
+  return (GLint)ceil((double)v * gl2ps->page_scale);
 }
 
 /* Coordinates are written to a fixed precision, the same over the whole
@@ -2863,6 +2878,7 @@ static void gl2psPrintPostScriptImagemap(GLfloat x, GLfloat y,
 static void gl2psPrintPostScriptHeader(void)
 {
   time_t now;
+  GLfloat m, x0, y0, x1, y1;
 
   /* Since compression is not part of the PostScript standard,
      compressed PostScript files are just gzipped PostScript files
@@ -2893,22 +2909,28 @@ static void gl2psPrintPostScriptHeader(void)
     gl2psPrintf("%%%%Orientation: %s\n"
                 "%%%%DocumentMedia: Default %d %d 0 () ()\n",
                 (gl2ps->options & GL2PS_LANDSCAPE) ? "Landscape" : "Portrait",
-                (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[3] :
-                (int)gl2ps->viewport[2],
-                (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[2] :
-                (int)gl2ps->viewport[3]);
+                (gl2ps->options & GL2PS_LANDSCAPE) ?
+                (int)gl2psPageHigh(gl2ps->viewport[3]) :
+                (int)gl2psPageHigh(gl2ps->viewport[2]),
+                (gl2ps->options & GL2PS_LANDSCAPE) ?
+                (int)gl2psPageHigh(gl2ps->viewport[2]) :
+                (int)gl2psPageHigh(gl2ps->viewport[3]));
   }
 
   gl2psPrintf("%%%%BoundingBox: %d %d %d %d\n"
               "%%%%EndComments\n",
-              (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[1] :
-              (int)gl2ps->viewport[0],
-              (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[0] :
-              (int)gl2ps->viewport[1],
-              (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[3] :
-              (int)gl2ps->viewport[2],
-              (gl2ps->options & GL2PS_LANDSCAPE) ? (int)gl2ps->viewport[2] :
-              (int)gl2ps->viewport[3]);
+              (gl2ps->options & GL2PS_LANDSCAPE) ?
+              (int)gl2psPageLow(gl2ps->viewport[1]) :
+              (int)gl2psPageLow(gl2ps->viewport[0]),
+              (gl2ps->options & GL2PS_LANDSCAPE) ?
+              (int)gl2psPageLow(gl2ps->viewport[0]) :
+              (int)gl2psPageLow(gl2ps->viewport[1]),
+              (gl2ps->options & GL2PS_LANDSCAPE) ?
+              (int)gl2psPageHigh(gl2ps->viewport[3]) :
+              (int)gl2psPageHigh(gl2ps->viewport[2]),
+              (gl2ps->options & GL2PS_LANDSCAPE) ?
+              (int)gl2psPageHigh(gl2ps->viewport[2]) :
+              (int)gl2psPageHigh(gl2ps->viewport[3]));
 
   /* RGB color: r g b C (replace C by G in output to change from rgb to gray)
      Grayscale: r g b G
@@ -3107,22 +3129,27 @@ static void gl2psPrintPostScriptHeader(void)
 
   if(gl2ps->options & GL2PS_LANDSCAPE){
     gl2psPrintf("%d 0 translate 90 rotate\n",
-                (int)gl2ps->viewport[3]);
+                (int)gl2psPageHigh(gl2ps->viewport[3]));
   }
 
   gl2psPrintf("%%%%EndPageSetup\n"
               "mark\n"
-              "gsave\n"
-              "1.0 1.0 scale\n");
+              "gsave\n");
+  if(gl2ps->page_scale != 1.0F)
+    gl2psPrintf("%g %g scale\n", gl2ps->page_scale, gl2ps->page_scale);
+  else
+    gl2psPrintf("1.0 1.0 scale\n");
 
   if(gl2ps->options & GL2PS_DRAW_BACKGROUND){
+    /* a scaled page is rounded outwards: the background reaches past it */
+    m = (gl2ps->page_scale != 1.0F) ? 1.0F / gl2ps->page_scale : 0.0F;
+    x0 = gl2ps->viewport[0] - m; y0 = gl2ps->viewport[1] - m;
+    x1 = gl2ps->viewport[2] + m; y1 = gl2ps->viewport[3] + m;
     gl2psPrintf("%g %g %g C\n"
-                "newpath %d %d moveto %d %d lineto %d %d lineto %d %d lineto\n"
+                "newpath %g %g moveto %g %g lineto %g %g lineto %g %g lineto\n"
                 "closepath fill\n",
                 gl2ps->bgcolor[0], gl2ps->bgcolor[1], gl2ps->bgcolor[2],
-                (int)gl2ps->viewport[0], (int)gl2ps->viewport[1], (int)gl2ps->viewport[2],
-                (int)gl2ps->viewport[1], (int)gl2ps->viewport[2], (int)gl2ps->viewport[3],
-                (int)gl2ps->viewport[0], (int)gl2ps->viewport[3]);
+                x0, y0, x1, y0, x1, y1, x0, y1);
   }
 }
 
@@ -4431,15 +4458,22 @@ static int gl2psOpenPDFDataStream(void)
 
 static int gl2psOpenPDFDataStreamWritePreface(void)
 {
-  int offs;
+  int offs = 0;
+  GLfloat m;
 
-  offs = gl2psPrintf("/GSa gs\n");
+  if(gl2ps->page_scale != 1.0F)
+    offs += gl2psPrintf("%g 0 0 %g 0 0 cm\n", gl2ps->page_scale,
+                        gl2ps->page_scale);
+  offs += gl2psPrintf("/GSa gs\n");
 
   if(gl2ps->options & GL2PS_DRAW_BACKGROUND){
+    /* a scaled page is rounded outwards: the background reaches past it */
+    m = (gl2ps->page_scale != 1.0F) ? 1.0F / gl2ps->page_scale : 0.0F;
     offs += gl2psPrintPDFFillColor(gl2ps->bgcolor);
-    offs += gl2psPrintf("%d %d %d %d re\n",
-                        (int)gl2ps->viewport[0], (int)gl2ps->viewport[1],
-                        (int)gl2ps->viewport[2], (int)gl2ps->viewport[3]);
+    offs += gl2psPrintf("%g %g %g %g re\n",
+                        gl2ps->viewport[0] - m, gl2ps->viewport[1] - m,
+                        gl2ps->viewport[2] + 2.0F * m,
+                        gl2ps->viewport[3] + 2.0F * m);
     offs += gl2psPrintf("f\n");
   }
   return offs;
@@ -4540,8 +4574,10 @@ static int gl2psPrintPDFOpenPage(void)
                  "/Type /Page\n"
                  "/Parent 3 0 R\n"
                  "/MediaBox [%d %d %d %d]\n",
-                 (int)gl2ps->viewport[0], (int)gl2ps->viewport[1],
-                 (int)gl2ps->viewport[2], (int)gl2ps->viewport[3]);
+                 (int)gl2psPageLow(gl2ps->viewport[0]),
+                 (int)gl2psPageLow(gl2ps->viewport[1]),
+                 (int)gl2psPageHigh(gl2ps->viewport[2]),
+                 (int)gl2psPageHigh(gl2ps->viewport[3]));
 
   if(gl2ps->options & GL2PS_LANDSCAPE)
     offs += fprintf(gl2ps->stream, "/Rotate -90\n");
@@ -5353,8 +5389,9 @@ static void gl2psPrintSVGHeader(void)
   gl2psPrintf("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
   gl2psPrintf("<svg xmlns=\"http://www.w3.org/2000/svg\"\n");
   gl2psPrintf("     xmlns:xlink=\"http://www.w3.org/1999/xlink\"\n"
-              "     width=\"%dpt\" height=\"%dpt\" viewBox=\"%d %d %d %d\">\n",
-              width, height, x, y, width, height);
+              "     width=\"%gpt\" height=\"%gpt\" viewBox=\"%d %d %d %d\">\n",
+              width * gl2ps->page_scale, height * gl2ps->page_scale,
+              x, y, width, height);
   gl2psPrintf("<title>%s</title>\n", gl2ps->title);
   gl2psPrintf("<desc>\n");
   gl2psPrintf("Creator: GL2PS %d.%d.%d%s, %s\n"
@@ -8257,6 +8294,7 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   }
 
   gl2ps->tex_scaling = 1.;
+  gl2ps->page_scale = 1.;
   gl2ps->psrun = 0;
   gl2ps->svgrun = 0;
   gl2ps->svgstyle[0] = '\0';
@@ -8712,6 +8750,30 @@ GL2PSDLL_API GLint gl2psForceRasterPos(GL2PSvertex *vert)
   gl2ps->rasterpos.rgba[1] = vert->rgba[1];
   gl2ps->rasterpos.rgba[2] = vert->rgba[2];
   gl2ps->rasterpos.rgba[3] = vert->rgba[3];
+
+  return GL2PS_SUCCESS;
+}
+
+GL2PSDLL_API GLint gl2psSetPageScale(GLfloat scale)
+{
+  if(!gl2ps) {
+    return GL2PS_UNINITIALIZED;
+  }
+  /* the header, written when the page or its first viewport starts,
+     holds the page size */
+  if(!gl2ps->header) {
+    gl2psMsg(GL2PS_ERROR, "Page scale must be set before the page starts");
+    return GL2PS_ERROR;
+  }
+  /* bounded, so that it prints without an exponent */
+  if(!(scale >= 1.0e-4F && scale <= 1.0e4F)) {
+    gl2psMsg(GL2PS_ERROR, "Page scale must be between 1e-4 and 1e4");
+    return GL2PS_ERROR;
+  }
+  if(gl2ps->format == GL2PS_TEX || gl2ps->format == GL2PS_PGF) {
+    gl2psMsg(GL2PS_WARNING, "Page scale is ignored for TeX and PGF output");
+  }
+  gl2ps->page_scale = scale;
 
   return GL2PS_SUCCESS;
 }

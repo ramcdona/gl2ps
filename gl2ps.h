@@ -253,6 +253,7 @@ GL2PSDLL_API const char *gl2psGetFileExtension(GLint format);
 GL2PSDLL_API const char *gl2psGetFormatDescription(GLint format);
 GL2PSDLL_API GLint gl2psGetFileFormat(void);
 GL2PSDLL_API GLint gl2psSetTexScaling(GLfloat scaling);
+GL2PSDLL_API GLint gl2psSetPageScale(GLfloat scale);
 
 #if defined(__cplusplus)
 }

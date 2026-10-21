@@ -65,6 +65,7 @@ static GLboolean blend = GL_FALSE;
 static GLboolean teapot = GL_FALSE;
 static GLboolean wireframe = GL_FALSE;
 static GLboolean lighting = GL_TRUE;
+static GLfloat page_scale = 1.0F;
 static const char *pixmap[] = {
   "****************************************************************",
   "*..............................................................*",
@@ -578,6 +579,7 @@ void writefile(int format, int sort, int options, int nbcol,
     gl2psBeginPage(file, "gl2psTest", viewport, format, sort, options,
                    GL_RGBA, 0, NULL, nbcol, nbcol, nbcol,
                    buffsize, fp, file);
+    if(page_scale != 1.0F) gl2psSetPageScale(page_scale);
     display();
     state = gl2psEndPage();
   }
@@ -658,6 +660,10 @@ void keyboard(unsigned char key, int x, int y)
 
     opt = GL2PS_DRAW_BACKGROUND;
     writefile(format, GL2PS_RASTER_SORT, opt, 0, "outRaster", ext);
+
+    page_scale = 0.5F;
+    writefile(format, GL2PS_RASTER_SORT, opt, 0, "outRasterHalf", ext);
+    page_scale = 1.0F;
 
 #ifdef GL2PS_HAVE_ZLIB
     opt = GL2PS_DRAW_BACKGROUND | GL2PS_OCCLUSION_CULL | GL2PS_BEST_ROOT | GL2PS_COMPRESS;
