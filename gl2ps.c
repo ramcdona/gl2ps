@@ -1250,10 +1250,10 @@ static void gl2psCutEdge(GL2PSvertex *a, GL2PSvertex *b, GL2PSplane plane,
   c->xyz[1] = a->xyz[1] + v[1] * sect;
   c->xyz[2] = a->xyz[2] + v[2] * sect;
 
-  c->rgba[0] = (1 - sect) * a->rgba[0] + sect * b->rgba[0];
-  c->rgba[1] = (1 - sect) * a->rgba[1] + sect * b->rgba[1];
-  c->rgba[2] = (1 - sect) * a->rgba[2] + sect * b->rgba[2];
-  c->rgba[3] = (1 - sect) * a->rgba[3] + sect * b->rgba[3];
+  c->rgba[0] = a->rgba[0] + sect * (b->rgba[0] - a->rgba[0]);
+  c->rgba[1] = a->rgba[1] + sect * (b->rgba[1] - a->rgba[1]);
+  c->rgba[2] = a->rgba[2] + sect * (b->rgba[2] - a->rgba[2]);
+  c->rgba[3] = a->rgba[3] + sect * (b->rgba[3] - a->rgba[3]);
 }
 
 static void gl2psCreateSplitPrimitive(GL2PSprimitive *parent, GL2PSplane plane,
