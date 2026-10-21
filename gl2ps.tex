@@ -241,6 +241,8 @@ determine the way primitives are handled:
   For scenes with many hidden or overlapping primitives this produces much
   smaller files than \dd{GL2PS_BSP_SORT} with \dd{GL2PS_OCCLUSION_CULL}, in
   a fraction of the time.
+  Consecutive triangles of the same color are kept together where the order
+  allows it.
 
   Transparent triangles are output after the opaque ones, in the order in
   which they were drawn, and the other primitives after them.

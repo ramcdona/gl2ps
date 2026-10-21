@@ -5947,6 +5947,8 @@ static GL2PSbackend *gl2psbackends[] = {
  * triangle's footprint holds a sample won by another, that one is in
  * front and is drawn later; a topological sort of these pairs gives a
  * painter's order.
+ * Of the triangles free to go next, one of the color of the last goes
+ * first, so that runs of one color stay together.
  *
  * Lines and points are cut to the runs that pass the depth test.
  *
@@ -6327,14 +6329,68 @@ static int gl2psRasterCompareFarFirst(const void *a, const void *b)
   return 1;
 }
 
+/* The color a triangle prints in when flat, that of its first vertex,
+   as 8 bit RGBA */
+static GLuint gl2psRasterColorKey(GL2PSprimitive *prim)
+{
+  GLuint key = 0;
+  int c, v;
+
+  for(c = 0; c < 4; c++){
+    v = (int)(255.0F * prim->verts[0].rgba[c] + 0.5F);
+    if(v < 0) v = 0;
+    if(v > 255) v = 255;
+    key = (key << 8) | (GLuint)v;
+  }
+  return key;
+}
+
+static int gl2psRasterCompareKeys(const void *a, const void *b)
+{
+  GLuint p = *(const GLuint*)a, q = *(const GLuint*)b;
+
+  if(p == q) return 0;
+  if(p < q) return -1;
+  return 1;
+}
+
+/* Index of key in the n sorted keys */
+static GLint gl2psRasterFindKey(const GLuint *keys, int n, GLuint key)
+{
+  int lo = 0, hi = n - 1, mid;
+
+  while(lo <= hi){
+    mid = (lo + hi) / 2;
+    if(keys[mid] == key) return mid;
+    if(keys[mid] < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/* The vertex colors of a triangle, as gl2psSameColorThreshold takes them */
+static GL2PSrgba *gl2psRasterRGBA(GL2PSprimitive *prim)
+{
+  static GL2PSrgba rgba[3];
+  int v;
+
+  for(v = 0; v < 3; v++)
+    memcpy(rgba[v], prim->verts[v].rgba, sizeof(GL2PSrgba));
+  return rgba;
+}
+
 /* Orders the opaque triangles in tris (n of them) so each comes before
-   every triangle seen in front of it; on a cycle the farthest one left
-   goes first.  Writes the order to out. */
+   every triangle seen in front of it.  Of those free to go next, one of
+   the color class of the last goes first, so runs of one color stay
+   together, then the farthest; on a cycle the farthest one left goes
+   first.  color holds a class from 0 to nclass - 1 per primitive, -1
+   for none.  Writes the order to out. */
 static void gl2psRasterOrder(GLint *tris, int n, GLint nprims,
-                             const GLfloat *zmean, GLint *out)
+                             const GLfloat *zmean, const GLint *color,
+                             int nclass, GLint *out)
 {
   GL2PSraster *r = gl2psRaster;
-  GLint *start, *indeg, *heap, *byfar, v, w;
+  GLint *start, *indeg, *heap, *byfar, *cstart, *ctop, *cstack, v, w, last = -1;
   char *done;
   int i, k, nheap = 0, nout = 0, far = 0, nuniq = 0;
 
@@ -6371,26 +6427,55 @@ static void gl2psRasterOrder(GLint *tris, int n, GLint nprims,
   gl2psRasterSortDepth = zmean;
   qsort(byfar, n, sizeof(GLint), gl2psRasterCompareFarFirst);
 
+  /* a stack of the ready triangles of each color class */
+  cstart = (GLint*)gl2psMalloc(((size_t)nclass + 1) * sizeof(GLint));
+  ctop = (GLint*)gl2psMalloc(((size_t)nclass + 1) * sizeof(GLint));
+  cstack = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  for(i = 0; i <= nclass; i++) cstart[i] = 0;
   for(i = 0; i < n; i++)
-    if(indeg[tris[i]] == 0) gl2psRasterHeapPush(heap, &nheap, tris[i], zmean);
+    if(color[tris[i]] >= 0) cstart[color[tris[i]] + 1]++;
+  for(i = 0; i < nclass; i++) cstart[i + 1] += cstart[i];
+  for(i = 0; i < nclass; i++) ctop[i] = cstart[i];
+
+  for(i = 0; i < n; i++){
+    v = tris[i];
+    if(indeg[v] == 0){
+      gl2psRasterHeapPush(heap, &nheap, v, zmean);
+      if(color[v] >= 0) cstack[ctop[color[v]]++] = v;
+    }
+  }
 
   while(nout < n){
-    if(nheap > 0){
-      v = gl2psRasterHeapPop(heap, &nheap, zmean);
-      if(done[v]) continue;
+    v = -1;
+    if(last >= 0){
+      while(ctop[last] > cstart[last] && v < 0){
+        w = cstack[--ctop[last]];
+        if(!done[w]) v = w;
+      }
     }
-    else{
+    while(v < 0 && nheap > 0){
+      w = gl2psRasterHeapPop(heap, &nheap, zmean);
+      if(!done[w]) v = w;
+    }
+    if(v < 0){
       while(done[byfar[far]]) far++;
       v = byfar[far];
     }
     done[v] = 1;
     out[nout++] = v;
+    last = color[v];
     for(k = start[v]; k < start[v + 1]; k++){
       w = r->pairs[2 * k + 1];
-      if(--indeg[w] == 0 && !done[w])
+      if(--indeg[w] == 0 && !done[w]){
         gl2psRasterHeapPush(heap, &nheap, w, zmean);
+        if(color[w] >= 0) cstack[ctop[color[w]]++] = w;
+      }
     }
   }
+
+  gl2psFree(cstart);
+  gl2psFree(ctop);
+  gl2psFree(cstack);
 
   gl2psFree(start);
   gl2psFree(indeg);
@@ -6454,8 +6539,9 @@ static GLboolean gl2psRasterSort(void)
   GL2PSraster *r;
   GL2PSlist *lines, *sorted, *behind, *others;
   GL2PSprimitive *prim;
-  GLint nprims, *opaque, *transp, *order, i, k;
-  GLint nopaque = 0, ntransp = 0;
+  GLint nprims, *opaque, *transp, *order, *color, i, k;
+  GLint nopaque = 0, ntransp = 0, nclass = 0;
+  GLuint *ckey;
   GLfloat *zmean, vw, vh, scale, x, y;
   char *keep;
   size_t nsamples;
@@ -6543,8 +6629,26 @@ static GLboolean gl2psRasterSort(void)
     }
   }
 
+  /* a triangle printed in one color gets the class of that color */
+  color = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+  ckey = (GLuint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLuint));
+  for(i = 0; i < nprims; i++) color[i] = -1;
+  for(i = 0; i < nopaque; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, opaque[i]);
+    ckey[i] = gl2psRasterColorKey(prim);
+  }
+  qsort(ckey, nopaque, sizeof(GLuint), gl2psRasterCompareKeys);
+  for(i = 0; i < nopaque; i++)
+    if(nclass == 0 || ckey[i] != ckey[nclass - 1]) ckey[nclass++] = ckey[i];
+  for(i = 0; i < nopaque; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, opaque[i]);
+    if(gl2psSameColorThreshold(3, gl2psRasterRGBA(prim), gl2ps->threshold))
+      color[opaque[i]] = gl2psRasterFindKey(ckey, nclass,
+                                            gl2psRasterColorKey(prim));
+  }
+
   order = (GLint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLint));
-  gl2psRasterOrder(opaque, nopaque, nprims, zmean, order);
+  gl2psRasterOrder(opaque, nopaque, nprims, zmean, color, nclass, order);
 
   /* lines cut to what is seen, the points that are seen, and texts and
      images, ahead of everything when their raster position is hidden, so
@@ -6607,6 +6711,8 @@ static GLboolean gl2psRasterSort(void)
   gl2psFree(opaque);
   gl2psFree(transp);
   gl2psFree(order);
+  gl2psFree(color);
+  gl2psFree(ckey);
   gl2psRasterFree();
   return GL_TRUE;
 }
