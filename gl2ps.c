@@ -5143,7 +5143,7 @@ static void gl2psSVGGetColorString(GL2PSrgba rgba, char str[32])
 
 static void gl2psPrintSVGHeader(void)
 {
-  int x, y, width, height;
+  int x, y, width, height, x1, y1;
   char col[32];
   time_t now;
 
@@ -5154,6 +5154,14 @@ static void gl2psPrintSVGHeader(void)
     y = (int)gl2ps->viewport[0];
     width = (int)gl2ps->viewport[3];
     height = (int)gl2ps->viewport[2];
+  }
+  else if(gl2ps->options & GL2PS_TIGHT_BOUNDING_BOX){
+    /* the viewport holds the corners of the box, and y is flipped about
+       the top one */
+    x = (int)gl2ps->viewport[0];
+    y = 0;
+    width = (int)gl2ps->viewport[2] - (int)gl2ps->viewport[0];
+    height = (int)gl2ps->viewport[3] - (int)gl2ps->viewport[1];
   }
   else{
     x = (int)gl2ps->viewport[0];
@@ -5183,11 +5191,19 @@ static void gl2psPrintSVGHeader(void)
 
   if(gl2ps->options & GL2PS_DRAW_BACKGROUND){
     gl2psSVGGetColorString(gl2ps->bgcolor, col);
-    gl2psPrintf("<polygon fill=\"%s\" points=\"%d,%d %d,%d %d,%d %d,%d\"/>\n", col,
-                (int)gl2ps->viewport[0], (int)gl2ps->viewport[1],
-                (int)gl2ps->viewport[2], (int)gl2ps->viewport[1],
-                (int)gl2ps->viewport[2], (int)gl2ps->viewport[3],
-                (int)gl2ps->viewport[0], (int)gl2ps->viewport[3]);
+    if(gl2ps->options & GL2PS_TIGHT_BOUNDING_BOX){
+      x1 = x + width;
+      y1 = y + height;
+      gl2psPrintf("<polygon fill=\"%s\" points=\"%d,%d %d,%d %d,%d %d,%d\"/>\n",
+                  col, x, y, x1, y, x1, y1, x, y1);
+    }
+    else{
+      gl2psPrintf("<polygon fill=\"%s\" points=\"%d,%d %d,%d %d,%d %d,%d\"/>\n", col,
+                  (int)gl2ps->viewport[0], (int)gl2ps->viewport[1],
+                  (int)gl2ps->viewport[2], (int)gl2ps->viewport[1],
+                  (int)gl2ps->viewport[2], (int)gl2ps->viewport[3],
+                  (int)gl2ps->viewport[0], (int)gl2ps->viewport[3]);
+    }
   }
 
   /* group all the primitives and disable antialiasing */
