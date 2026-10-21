@@ -97,6 +97,8 @@
 #define GL2PS_IMAGEMAP_TOKEN       15
 #define GL2PS_DRAW_PIXELS_TOKEN    16
 #define GL2PS_TEXT_TOKEN           17
+#define GL2PS_BEGIN_FRONT_FACES_TOKEN 18
+#define GL2PS_END_FRONT_FACES_TOKEN   19
 
 typedef enum {
   T_UNDEFINED    = -1,
@@ -163,7 +165,7 @@ struct GL2PSimagemap_ {
 typedef struct {
   GLshort type, numverts;
   GLushort pattern;
-  char boundary, offset, culled;
+  char boundary, offset, culled, front;
   GLint factor, linecap, linejoin, sortid;
   GLfloat width, ofactor, ounits;
   GL2PSvertex *verts;
@@ -193,7 +195,7 @@ typedef struct {
   GLint format, sort, options, colorsize, colormode, buffersize;
   GLint lastlinecap, lastlinejoin;
   char *title, *producer, *filename;
-  GLboolean boundary, blending;
+  GLboolean boundary, blending, frontfaces;
   GLfloat *feedback, lastlinewidth;
   GLint viewport[4], blendfunc[2], lastfactor;
   GL2PSrgba *colormap, lastrgba, threshold, bgcolor;
@@ -902,6 +904,7 @@ static GLint gl2psAddText(GLint type, const char *str, const char *fontname,
     prim->verts[1].xyz[2] = 0;
   }
   prim->culled = 0;
+  prim->front = 0;
   prim->offset = 0;
   prim->ofactor = 0.0;
   prim->ounits = 0.0;
@@ -1088,6 +1091,7 @@ static GL2PSprimitive *gl2psCopyPrimitive(GL2PSprimitive *p)
   prim->pattern = p->pattern;
   prim->factor = p->factor;
   prim->culled = p->culled;
+  prim->front = p->front;
   prim->width = p->width;
   prim->linecap = p->linecap;
   prim->linejoin = p->linejoin;
@@ -1283,6 +1287,7 @@ static void gl2psCreateSplitPrimitive(GL2PSprimitive *parent, GL2PSplane plane,
 
   child->boundary = 0; /* FIXME: not done! */
   child->culled = parent->culled;
+  child->front = parent->front;
   child->offset = parent->offset;
   child->ofactor = parent->ofactor;
   child->ounits = parent->ounits;
@@ -1423,6 +1428,7 @@ static void gl2psDivideQuad(GL2PSprimitive *quad,
   (*t1)->type = (*t2)->type = GL2PS_TRIANGLE;
   (*t1)->numverts = (*t2)->numverts = 3;
   (*t1)->culled = (*t2)->culled = quad->culled;
+  (*t1)->front = (*t2)->front = quad->front;
   (*t1)->offset = (*t2)->offset = quad->offset;
   (*t1)->ofactor = (*t2)->ofactor = quad->ofactor;
   (*t1)->ounits = (*t2)->ounits = quad->ounits;
@@ -1971,6 +1977,7 @@ static GL2PSprimitive *gl2psCreateSplitPrimitive2D(GL2PSprimitive *parent,
   }
   child->boundary = 0; /* FIXME: not done! */
   child->culled = parent->culled;
+  child->front = parent->front;
   child->offset = parent->offset;
   child->ofactor = parent->ofactor;
   child->ounits = parent->ounits;
@@ -2169,6 +2176,7 @@ static void gl2psAddBoundaryInList(GL2PSprimitive *prim, GL2PSlist *list)
       b->pattern = prim->pattern;
       b->factor = prim->factor;
       b->culled = prim->culled;
+      b->front = prim->front;
       b->width = prim->width;
       b->linecap = prim->linecap;
       b->linejoin = prim->linejoin;
@@ -2261,6 +2269,8 @@ GL2PSDLL_API void gl2psAddPolyPrimitive(GLshort type, GLshort numverts,
   prim->linecap = linecap;
   prim->linejoin = linejoin;
   prim->culled = 0;
+  prim->front = 0;
+  if(gl2ps->frontfaces) prim->front = 1;
 
   /* FIXME: here we should have an option to split stretched
      tris/quads to enhance SIMPLE_SORT */
@@ -2395,6 +2405,8 @@ static void gl2psParseFeedbackBuffer(GLint used)
       case GL2PS_END_BOUNDARY_TOKEN : boundary = GL_FALSE; break;
       case GL2PS_END_STIPPLE_TOKEN : pattern = 0; factor = 0; break;
       case GL2PS_BEGIN_BLEND_TOKEN : gl2ps->blending = GL_TRUE; break;
+      case GL2PS_BEGIN_FRONT_FACES_TOKEN : gl2ps->frontfaces = GL_TRUE; break;
+      case GL2PS_END_FRONT_FACES_TOKEN : gl2ps->frontfaces = GL_FALSE; break;
       case GL2PS_END_BLEND_TOKEN : gl2ps->blending = GL_FALSE; break;
       case GL2PS_BEGIN_STIPPLE_TOKEN :
         current += 2;
@@ -2441,6 +2453,7 @@ static void gl2psParseFeedbackBuffer(GLint used)
         prim->numverts = 4;
         prim->verts = (GL2PSvertex *)gl2psMalloc(4 * sizeof(GL2PSvertex));
         prim->culled = 0;
+        prim->front = 0;
         prim->offset = 0;
         prim->ofactor = 0.0;
         prim->ounits = 0.0;
@@ -5966,6 +5979,9 @@ static GL2PSbackend *gl2psbackends[] = {
  * behind it is tinted.
  * The runs of a line seen through a transparent triangle go in before
  * the transparent triangles.
+ * With GL2PS_FRONT_FACES marking them, the back faces go before the
+ * front faces, and the runs of a line seen through a front face only go
+ * in between.
  *
  *********************************************************************/
 
@@ -5999,8 +6015,10 @@ typedef struct {
   GLint *stamp;   /* per primitive in front: the last one recorded behind */
   GLint *pairs;   /* (behind, in front) pairs from the footprint pass */
   int npairs, maxpairs;
-  GLfloat *tdepth; /* nearest transparent face in front of the opaque */
+  GLfloat *tdepth; /* nearest transparent back face in front of the opaque */
   GLint *tid;
+  GLfloat *fdepth; /* nearest transparent front face in front of the opaque */
+  GLint *fid;
 } GL2PSraster;
 
 static GL2PSraster *gl2psRaster = NULL;
@@ -6177,6 +6195,13 @@ static int gl2psRasterTriangle(GL2PSprimitive *prim, GLint idx, int mode)
           gl2psRasterAddPair(idx, front);
         break;
       case GL2PS_RASTER_TWRITE :
+        if(prim->front){
+          if(zs < r->depth[k] && zs < r->fdepth[k]){
+            r->fdepth[k] = zs;
+            r->fid[k] = idx;
+          }
+          break;
+        }
         if(zs < r->depth[k] && zs < r->tdepth[k]){
           r->tdepth[k] = zs;
           r->tid[k] = idx;
@@ -6256,9 +6281,10 @@ static int gl2psRasterUnderTransparent(const GLfloat *depth, const GLint *id,
 }
 
 /* Adds to seen the runs of a line that pass the depth test, or to under
-   where a transparent triangle is in front of them */
+   where a transparent back face is in front of them, or to mid where only
+   a front face is */
 static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen,
-                                GL2PSlist *under)
+                                GL2PSlist *under, GL2PSlist *mid)
 {
   GLfloat x0, y0, x1, y1, x, y, len, t, z;
   int n, k, start = -1, state, runstate = 0;
@@ -6274,7 +6300,8 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen,
   n = (int)ceil(len);
   if(n < 1) n = 1;
 
-  /* state 0 hidden, 1 seen, 2 seen through a transparent face */
+  /* state 0 hidden, 1 seen, 2 seen through a back face, 3 seen through
+     a front face only */
   for(k = 0; k <= n; k++){
     state = 0;
     if(k < n){
@@ -6288,6 +6315,9 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen,
         if(gl2psRasterUnderTransparent(gl2psRaster->tdepth, gl2psRaster->tid,
                                        x, y, z))
           state = 2;
+        else if(gl2psRasterUnderTransparent(gl2psRaster->fdepth,
+                                            gl2psRaster->fid, x, y, z))
+          state = 3;
       }
     }
     if(start >= 0 && state != runstate){
@@ -6299,6 +6329,7 @@ static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen,
                                  (GLfloat)k / (GLfloat)n);
       }
       if(runstate == 2) gl2psListAdd(under, &sub);
+      else if(runstate == 3) gl2psListAdd(mid, &sub);
       else gl2psListAdd(seen, &sub);
       start = -1;
     }
@@ -7263,6 +7294,8 @@ static void gl2psRasterFree(void)
   gl2psFree(gl2psRaster->pairs);
   gl2psFree(gl2psRaster->tdepth);
   gl2psFree(gl2psRaster->tid);
+  gl2psFree(gl2psRaster->fdepth);
+  gl2psFree(gl2psRaster->fid);
   gl2psFree(gl2psRaster);
   gl2psRaster = NULL;
 }
@@ -7309,7 +7342,7 @@ static void gl2psRasterPrepare(void)
 static GLboolean gl2psRasterSort(GLboolean cut)
 {
   GL2PSraster *r;
-  GL2PSlist *lines, *sorted, *behind, *others, *under;
+  GL2PSlist *lines, *sorted, *behind, *others, *under, *mid;
   GL2PSprimitive *prim;
   GLint nprims, *opaque, *transp, *order, *color, i, k;
   GLint nopaque = 0, ntransp = 0, nclass = 0;
@@ -7350,6 +7383,8 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   r->npairs = r->maxpairs = 0;
   r->tdepth = NULL;
   r->tid = NULL;
+  r->fdepth = NULL;
+  r->fid = NULL;
   if(!r->depth || !r->id || !r->slope || !r->covered || !r->stamp){
     gl2psRasterFree();
     return GL_FALSE;
@@ -7440,17 +7475,25 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   if(ntransp > 0){
     r->tdepth = (GLfloat*)gl2psMalloc(nsamples * sizeof(GLfloat));
     r->tid = (GLint*)gl2psMalloc(nsamples * sizeof(GLint));
-    if(!r->tdepth || !r->tid){
+    r->fdepth = (GLfloat*)gl2psMalloc(nsamples * sizeof(GLfloat));
+    r->fid = (GLint*)gl2psMalloc(nsamples * sizeof(GLint));
+    if(!r->tdepth || !r->tid || !r->fdepth || !r->fid){
       /* without them the lines go over the transparent triangles */
       gl2psFree(r->tdepth);
       gl2psFree(r->tid);
+      gl2psFree(r->fdepth);
+      gl2psFree(r->fid);
       r->tdepth = NULL;
       r->tid = NULL;
+      r->fdepth = NULL;
+      r->fid = NULL;
     }
     else{
       for(k = 0; k < (GLint)nsamples; k++){
         r->tdepth[k] = FLT_MAX;
         r->tid[k] = -1;
+        r->fdepth[k] = FLT_MAX;
+        r->fid[k] = -1;
       }
       for(i = 0; i < ntransp; i++)
         gl2psRasterTriangle(*(GL2PSprimitive**)gl2psListPointer
@@ -7464,12 +7507,13 @@ static GLboolean gl2psRasterSort(GLboolean cut)
      that what is in front of it covers them */
   lines = gl2psListCreate(500, 500, sizeof(GL2PSprimitive*));
   under = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
+  mid = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   behind = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   others = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   for(i = 0; i < nprims; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
     if(prim->type == GL2PS_LINE){
-      gl2psRasterClipLine(prim, lines, under);
+      gl2psRasterClipLine(prim, lines, under, mid);
     }
     else if(prim->type == GL2PS_POINT){
       gl2psRasterToSample(&prim->verts[0], &x, &y);
@@ -7493,9 +7537,11 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   }
 
   /* as OpenGL draws them: what is behind everything; the opaque
-     triangles; the lines seen through a transparent face; the
-     transparent faces in the order they came, cut to what the opaque
-     leave seen; the other lines, then everything else */
+     triangles; the lines seen through a transparent back face; the back
+     faces in the order they came, cut to what the opaque leave seen; the
+     lines seen through a front face only; the front faces; the other
+     lines, then everything else.  Faces not marked GL2PS_FRONT_FACES
+     count as back faces. */
   sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
                            sizeof(GL2PSprimitive*));
   for(i = 0; i < gl2psListNbr(behind); i++)
@@ -7505,7 +7551,13 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   gl2psRasterChainLines(under, sorted);
   for(i = 0; i < ntransp; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, transp[i]);
-    if(gl2psRasterClipTransparent(prim, transp[i], sorted))
+    if(!prim->front && gl2psRasterClipTransparent(prim, transp[i], sorted))
+      keep[transp[i]] = 0;
+  }
+  gl2psRasterChainLines(mid, sorted);
+  for(i = 0; i < ntransp; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, transp[i]);
+    if(prim->front && gl2psRasterClipTransparent(prim, transp[i], sorted))
       keep[transp[i]] = 0;
   }
   gl2psRasterChainLines(lines, sorted);
@@ -7520,6 +7572,7 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   gl2psListDelete(gl2ps->primitives);
   gl2psListDelete(lines);
   gl2psListDelete(under);
+  gl2psListDelete(mid);
   gl2ps->primitives = sorted;
 
   gl2psFree(zmean);
@@ -7868,6 +7921,7 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   }
 
   gl2ps->tex_scaling = 1.;
+  gl2ps->frontfaces = GL_FALSE;
 
   return GL2PS_SUCCESS;
 }
@@ -8038,6 +8092,7 @@ GL2PSDLL_API GLint gl2psDrawPixels(GLsizei width, GLsizei height,
   prim->verts[0].xyz[1] = pos[1] + yorig;
   prim->verts[0].xyz[2] = pos[2];
   prim->culled = 0;
+  prim->front = 0;
   prim->offset = 0;
   prim->ofactor = 0.0;
   prim->ounits = 0.0;
@@ -8156,6 +8211,9 @@ GL2PSDLL_API GLint gl2psEnable(GLint mode)
   case GL2PS_BLEND :
     glPassThrough(GL2PS_BEGIN_BLEND_TOKEN);
     break;
+  case GL2PS_FRONT_FACES :
+    glPassThrough(GL2PS_BEGIN_FRONT_FACES_TOKEN);
+    break;
   default :
     gl2psMsg(GL2PS_WARNING, "Unknown mode in gl2psEnable: %d", mode);
     return GL2PS_WARNING;
@@ -8180,6 +8238,9 @@ GL2PSDLL_API GLint gl2psDisable(GLint mode)
     break;
   case GL2PS_BLEND :
     glPassThrough(GL2PS_END_BLEND_TOKEN);
+    break;
+  case GL2PS_FRONT_FACES :
+    glPassThrough(GL2PS_END_FRONT_FACES_TOKEN);
     break;
   default :
     gl2psMsg(GL2PS_WARNING, "Unknown mode in gl2psDisable: %d", mode);

@@ -251,6 +251,7 @@ determine the way primitives are handled:
   Transparent triangles that are hidden everywhere are discarded.
   Each transparent triangle is cut to the part that no opaque triangle hides.
   The parts of lines seen through a transparent triangle are output before it.
+  See also \dd{GL2PS_FRONT_FACES} in section~\ref{sec:gl2psEnable}.
 
   Lines and points are cut to their visible parts.
   Lines lying on a surface are kept through a depth tolerance, so
@@ -601,6 +602,13 @@ GLint gl2psDisable( GLint mode )
   \dd{glPolygonOffset}).
 \item[\dd{GL2PS_BLEND}] Emulates the \dd{GL_BLEND} functionality.
   (Warning: this might change in future releases.)
+\item[\dd{GL2PS_FRONT_FACES}] (for \dd{GL2PS_RASTER_SORT} only) Marks the
+  transparent primitives drawn in between as front faces. When transparent
+  objects are drawn in two passes, first their back faces and then their
+  front faces (e.g.\ with \dd{glCullFace} and \dd{glDepthMask(GL_FALSE)}),
+  enclosing the second pass in \dd{gl2psEnable(GL2PS_FRONT_FACES)} and
+  \dd{gl2psDisable(GL2PS_FRONT_FACES)} lets the lines lying between the two
+  layers be output between them, as OpenGL draws them.
 \item[\dd{GL2PS_POLYGON_BOUNDARY}] Not implemented yet.
 \end{description}
 

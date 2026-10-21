@@ -148,6 +148,7 @@
 #define GL2PS_POLYGON_BOUNDARY    2
 #define GL2PS_LINE_STIPPLE        3
 #define GL2PS_BLEND               4
+#define GL2PS_FRONT_FACES         5
 
 /* Arguments for gl2psLineCap/Join */
 

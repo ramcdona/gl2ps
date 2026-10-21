@@ -249,6 +249,7 @@ void objects(void)
   for(pass = 0; pass < npass; pass++){
     if(pass == 1){
       glCullFace(GL_BACK);
+      gl2psEnable(GL2PS_FRONT_FACES);
     }
     if(teapot == GL_TRUE){
       glutSolidTeapot(0.7);
@@ -258,6 +259,7 @@ void objects(void)
     }
   }
   if(blend){
+    gl2psDisable(GL2PS_FRONT_FACES);
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
   }
