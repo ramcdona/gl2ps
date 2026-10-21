@@ -5965,6 +5965,8 @@ static GL2PSbackend *gl2psbackends[] = {
 /* What gl2psRasterTriangle does with each sample a triangle covers */
 #define GL2PS_RASTER_WRITE       1 /* depth test it into the buffer */
 #define GL2PS_RASTER_FOOTPRINT   2 /* record the triangle in front */
+#define GL2PS_RASTER_TEST        3 /* take the first sample where it passes
+                                       the depth test */
 
 typedef struct {
   int w, h;
@@ -6137,6 +6139,13 @@ static int gl2psRasterTriangle(GL2PSprimitive *prim, GLint idx, int mode)
         if(front >= 0 && front != idx)
           gl2psRasterAddPair(idx, front);
         break;
+      case GL2PS_RASTER_TEST :
+        front = r->id[k];
+        if(front >= 0 &&
+           zs > r->depth[k] + GL2PS_RASTER_SLOPE_TOL * r->slope[front] +
+           GL2PS_RASTER_CONST_TOL)
+          continue;
+        return 1;
       }
       found = 1;
     }
@@ -6524,7 +6533,8 @@ static GLboolean gl2psRasterSort(void)
         keep[i] = (char)gl2psRasterCentroidVisible(prim, zmean[i]);
       if(keep[i]) opaque[nopaque++] = i;
     }
-    else{
+    else if(gl2psRasterTriangle(prim, i, GL2PS_RASTER_TEST) ||
+            gl2psRasterCentroidVisible(prim, zmean[i])){
       keep[i] = 1;
       transp[ntransp++] = i;
     }

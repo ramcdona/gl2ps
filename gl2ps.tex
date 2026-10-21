@@ -244,6 +244,7 @@ determine the way primitives are handled:
 
   Transparent triangles are output after the opaque ones, in the order in
   which they were drawn, and the other primitives after them.
+  Transparent triangles that are hidden everywhere are discarded.
 
   Lines and points are cut to their visible parts.
   Lines lying on a surface are kept through a depth tolerance, so
