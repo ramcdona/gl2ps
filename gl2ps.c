@@ -5961,6 +5961,10 @@ static GL2PSbackend *gl2psbackends[] = {
  * Texts and images whose raster position is hidden go first, so that
  * what is in front of them covers them.
  *
+ * Transparent triangles follow the opaque scene, in the order they came,
+ * each cut to the part no opaque triangle hides, so that whatever is
+ * behind it is tinted.
+ *
  *********************************************************************/
 
 /* Size of the visibility buffer: at most this many samples, and at
@@ -5978,6 +5982,7 @@ static GL2PSbackend *gl2psbackends[] = {
 #define GL2PS_RASTER_FOOTPRINT   2 /* record the triangle in front */
 #define GL2PS_RASTER_TEST        3 /* take the first sample where it passes
                                        the depth test */
+#define GL2PS_RASTER_OCCLUDERS   4 /* record the opaque triangle in front */
 
 typedef struct {
   int w, h;
@@ -6157,6 +6162,13 @@ static int gl2psRasterTriangle(GL2PSprimitive *prim, GLint idx, int mode)
            GL2PS_RASTER_CONST_TOL)
           continue;
         return 1;
+      case GL2PS_RASTER_OCCLUDERS :
+        front = r->id[k];
+        if(front >= 0 &&
+           zs > r->depth[k] + GL2PS_RASTER_SLOPE_TOL * r->slope[front] +
+           GL2PS_RASTER_CONST_TOL)
+          gl2psRasterAddPair(idx, front);
+        break;
       }
       found = 1;
     }
@@ -7054,6 +7066,156 @@ static int gl2psRasterSplitCrossings(const char *keep)
   return nsplit;
 }
 
+/* Smallest piece kept, in square pixels */
+#define GL2PS_RASTER_MIN_AREA 1.0e-3F
+
+static GLfloat gl2psRasterArea(GL2PSprimitive *p)
+{
+  GLfloat a = 0.0F;
+  int i, j;
+
+  for(i = 0; i < p->numverts; i++){
+    j = (i + 1) % p->numverts;
+    a += p->verts[i].xyz[0] * p->verts[j].xyz[1] -
+      p->verts[j].xyz[0] * p->verts[i].xyz[1];
+  }
+  return (GLfloat)fabs(0.5F * a);
+}
+
+/* An edge of a triangle in front of a transparent one, its ends in
+   order */
+typedef struct {
+  GLfloat x0, y0, x1, y1;
+} GL2PSrasteredge;
+
+static int gl2psRasterCompareEdges(const void *a, const void *b)
+{
+  const GL2PSrasteredge *p = (const GL2PSrasteredge*)a;
+  const GL2PSrasteredge *q = (const GL2PSrasteredge*)b;
+
+  if(p->x0 < q->x0) return -1;
+  if(p->x0 > q->x0) return 1;
+  if(p->y0 < q->y0) return -1;
+  if(p->y0 > q->y0) return 1;
+  if(p->x1 < q->x1) return -1;
+  if(p->x1 > q->x1) return 1;
+  if(p->y1 < q->y1) return -1;
+  if(p->y1 > q->y1) return 1;
+  return 0;
+}
+
+/* The test of gl2psRasterClipTransparent: a piece is cut along edge i
+   of data only where their screen boxes overlap */
+static int gl2psRasterEdgeTest(GL2PSprimitive *piece, GL2PSplane plane,
+                               int i, void *data)
+{
+  GL2PSrasteredge *e = (GL2PSrasteredge*)data + i;
+  GLfloat x, y, xlo, xhi, ylo, yhi;
+  int k;
+
+  (void)plane;
+  xlo = xhi = piece->verts[0].xyz[0];
+  ylo = yhi = piece->verts[0].xyz[1];
+  for(k = 1; k < piece->numverts; k++){
+    x = piece->verts[k].xyz[0];
+    y = piece->verts[k].xyz[1];
+    if(x < xlo) xlo = x;
+    if(x > xhi) xhi = x;
+    if(y < ylo) ylo = y;
+    if(y > yhi) yhi = y;
+  }
+  return (xlo <= e->x1 && xhi >= e->x0 &&
+          ylo <= (e->y0 > e->y1 ? e->y0 : e->y1) &&
+          yhi >= (e->y0 < e->y1 ? e->y0 : e->y1));
+}
+
+/* Adds to list the part of transparent triangle idx that no opaque
+   triangle hides, as triangles.  The triangle is cut along the outline
+   of the opaque triangles in front of it, the edges they do not share,
+   so each piece is hidden or seen whole; a piece is kept when its
+   centroid passes the depth test.  Returns 1 when it added pieces, 0
+   when it added the triangle itself. */
+static int gl2psRasterClipTransparent(GL2PSprimitive *prim, GLint idx,
+                                      GL2PSlist *list)
+{
+  GL2PSraster *r = gl2psRaster;
+  GL2PSrasteredge *edges, e;
+  GL2PSplane *planes;
+  GL2PSlist *pieces;
+  GL2PSprimitive *w, *p;
+  GL2PSxyz a, b;
+  GLfloat c, cx, cy, cz;
+  int nedges = 0, nb, i, j, k, m;
+
+  r->npairs = 0;
+  gl2psRasterTriangle(prim, idx, GL2PS_RASTER_OCCLUDERS);
+  if(r->npairs == 0){
+    gl2psListAdd(list, &prim);
+    return 0;
+  }
+  qsort(r->pairs, r->npairs, 2 * sizeof(GLint), gl2psRasterComparePairs);
+
+  /* the edges of the triangles in front, each once */
+  edges = (GL2PSrasteredge*)gl2psMalloc(3 * (size_t)r->npairs *
+                                        sizeof(GL2PSrasteredge));
+  for(i = 0; i < r->npairs; i++){
+    if(i > 0 && r->pairs[2 * i + 1] == r->pairs[2 * i - 1]) continue;
+    w = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives,
+                                            r->pairs[2 * i + 1]);
+    for(k = 0; k < 3; k++){
+      m = (k + 1) % 3;
+      e.x0 = w->verts[k].xyz[0]; e.y0 = w->verts[k].xyz[1];
+      e.x1 = w->verts[m].xyz[0]; e.y1 = w->verts[m].xyz[1];
+      if(e.x1 < e.x0 || (e.x1 == e.x0 && e.y1 < e.y0)){
+        c = e.x0; e.x0 = e.x1; e.x1 = c;
+        c = e.y0; e.y0 = e.y1; e.y1 = c;
+      }
+      edges[nedges++] = e;
+    }
+  }
+
+  /* the outline: edges not shared by two of them, each the plane through
+     it at right angles to the screen */
+  qsort(edges, nedges, sizeof(GL2PSrasteredge), gl2psRasterCompareEdges);
+  planes = (GL2PSplane*)gl2psMalloc(((size_t)nedges + 1) * sizeof(GL2PSplane));
+  nb = 0;
+  for(i = 0; i < nedges; i = j){
+    for(j = i + 1;
+        j < nedges && !gl2psRasterCompareEdges(&edges[i], &edges[j]); j++);
+    if(j - i > 1) continue;
+    a[0] = edges[i].x0; a[1] = edges[i].y0; a[2] = 0.0F;
+    b[0] = edges[i].x1; b[1] = edges[i].y1; b[2] = 0.0F;
+    if(gl2psGetPlaneFromPoints(a, b, planes[nb])) edges[nb++] = edges[i];
+  }
+
+  pieces = gl2psListCreate(8, 8, sizeof(GL2PSprimitive*));
+  gl2psRasterCut(prim, planes, nb, gl2psRasterEdgeTest, edges, pieces);
+  gl2psFree(edges);
+  gl2psFree(planes);
+
+  /* the pieces seen */
+  for(j = 0; j < gl2psListNbr(pieces); j++){
+    p = *(GL2PSprimitive**)gl2psListPointer(pieces, j);
+    cx = cy = cz = 0.0F;
+    for(k = 0; k < p->numverts; k++){
+      cx += p->verts[k].xyz[0];
+      cy += p->verts[k].xyz[1];
+      cz += p->verts[k].xyz[2];
+    }
+    cx /= (GLfloat)p->numverts;
+    cy /= (GLfloat)p->numverts;
+    cz /= (GLfloat)p->numverts;
+    if(gl2psRasterArea(p) > GL2PS_RASTER_MIN_AREA &&
+       gl2psRasterPointVisible((cx - r->x0) * r->scale,
+                               (cy - r->y0) * r->scale, cz))
+      gl2psListAdd(list, &p);
+    else
+      gl2psFreePrimitive(&p);
+  }
+  gl2psListDelete(pieces);
+  return 1;
+}
+
 static void gl2psRasterFree(void)
 {
   if(!gl2psRaster) return;
@@ -7266,15 +7428,19 @@ static GLboolean gl2psRasterSort(GLboolean cut)
   }
 
   /* what is behind everything, the opaque triangles, the transparent
-     ones in the order they came, the lines, then everything else */
+     ones in the order they came, cut to what the opaque leave seen, the
+     lines, then everything else */
   sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
                            sizeof(GL2PSprimitive*));
   for(i = 0; i < gl2psListNbr(behind); i++)
     gl2psListAdd(sorted, gl2psListPointer(behind, i));
   for(i = 0; i < nopaque; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
-  for(i = 0; i < ntransp; i++)
-    gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, transp[i]));
+  for(i = 0; i < ntransp; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, transp[i]);
+    if(gl2psRasterClipTransparent(prim, transp[i], sorted))
+      keep[transp[i]] = 0;
+  }
   gl2psRasterChainLines(lines, sorted);
   for(i = 0; i < gl2psListNbr(others); i++)
     gl2psListAdd(sorted, gl2psListPointer(others, i));
