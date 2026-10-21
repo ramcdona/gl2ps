@@ -230,6 +230,20 @@ determine the way primitives are handled:
   of a three-dimensional scene is sought. Beware that this algorithm
   requires a lot more computational time (and memory) than the simple
   barycentric sort.
+\item[\dd{GL2PS_RASTER_SORT}] The opaque triangles are drawn into a
+  software depth buffer at the resolution of the viewport (with at most 8
+  million samples).
+  Triangles that are hidden everywhere are discarded, and the visible ones
+  are output so that each comes before every triangle seen in front of it,
+  without splitting them.
+  Hidden surfaces are removed exactly up to the resolution of the depth
+  buffer.
+  For scenes with many hidden or overlapping primitives this produces much
+  smaller files than \dd{GL2PS_BSP_SORT} with \dd{GL2PS_OCCLUSION_CULL}, in
+  a fraction of the time.
+
+  Transparent triangles are output after the opaque ones, in the order in
+  which they were drawn, and the other primitives after them.
 \end{description}
 
 \item[\dd{options}] Sets global plot options, chosen among (multiple options

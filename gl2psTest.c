@@ -654,6 +654,9 @@ void keyboard(unsigned char key, int x, int y)
     opt = GL2PS_DRAW_BACKGROUND | GL2PS_OCCLUSION_CULL | GL2PS_BEST_ROOT;
     writefile(format, GL2PS_BSP_SORT, opt, 0, "outBspCulled", ext);
 
+    opt = GL2PS_DRAW_BACKGROUND;
+    writefile(format, GL2PS_RASTER_SORT, opt, 0, "outRaster", ext);
+
 #ifdef GL2PS_HAVE_ZLIB
     opt = GL2PS_DRAW_BACKGROUND | GL2PS_OCCLUSION_CULL | GL2PS_BEST_ROOT | GL2PS_COMPRESS;
     if(format == GL2PS_PS || format == GL2PS_EPS) strcat(ext, ".gz");

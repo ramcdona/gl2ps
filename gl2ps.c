@@ -39,6 +39,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <float.h>
+#include <limits.h>
 
 #if defined(GL2PS_HAVE_ZLIB)
 #include <zlib.h>
@@ -5934,6 +5935,568 @@ static GL2PSbackend *gl2psbackends[] = {
   &gl2psPGF  /* 5 */
 };
 
+/*********************************************************************
+ *
+ * Raster sort: visibility and drawing order from a software z-buffer
+ *
+ * Every opaque triangle is scan converted into a depth and primitive ID
+ * buffer, and one that wins no sample is hidden and dropped.  Where a
+ * triangle's footprint holds a sample won by another, that one is in
+ * front and is drawn later; a topological sort of these pairs gives a
+ * painter's order.
+ *
+ *********************************************************************/
+
+/* Size of the visibility buffer: at most this many samples, and at
+   most this many samples per pixel in each direction */
+#define GL2PS_RASTER_MAX_SAMPLES 8000000
+#define GL2PS_RASTER_MAX_SCALE   2.0F
+
+/* Depth test tolerance: this many samples of the slope of the triangle
+   in front, plus a constant (z is scaled to [0, GL2PS_ZSCALE]) */
+#define GL2PS_RASTER_SLOPE_TOL   1.5F
+#define GL2PS_RASTER_CONST_TOL   1.0e-2F
+
+/* What gl2psRasterTriangle does with each sample a triangle covers */
+#define GL2PS_RASTER_WRITE       1 /* depth test it into the buffer */
+#define GL2PS_RASTER_FOOTPRINT   2 /* record the triangle in front */
+
+typedef struct {
+  int w, h;
+  GLfloat scale, x0, y0;
+  GLfloat *depth;
+  GLint *id;
+  GLfloat *slope; /* per primitive: |dz/dx| + |dz/dy| per sample */
+  int *covered;   /* per primitive: samples inside its footprint */
+  GLint *stamp;   /* per primitive in front: the last one recorded behind */
+  GLint *pairs;   /* (behind, in front) pairs from the footprint pass */
+  int npairs, maxpairs;
+} GL2PSraster;
+
+static GL2PSraster *gl2psRaster = NULL;
+
+static void gl2psRasterToSample(const GL2PSvertex *v, GLfloat *x, GLfloat *y)
+{
+  *x = (v->xyz[0] - gl2psRaster->x0) * gl2psRaster->scale;
+  *y = (v->xyz[1] - gl2psRaster->y0) * gl2psRaster->scale;
+}
+
+static GLfloat gl2psRasterEdge(GLfloat ax, GLfloat ay, GLfloat bx, GLfloat by,
+                               GLfloat px, GLfloat py)
+{
+  return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+/* Narrows [*lo, *hi], the x of the samples of the row at py, to where
+   the edge from a to b is not negative */
+static void gl2psRasterSpan(GLfloat ax, GLfloat ay, GLfloat bx, GLfloat by,
+                            GLfloat py, GLfloat *lo, GLfloat *hi)
+{
+  GLfloat dy = by - ay, c = (bx - ax) * (py - ay) + dy * ax;
+
+  if(dy > 0.0F){
+    if(c / dy < *hi) *hi = c / dy;
+  }
+  else if(dy < 0.0F){
+    if(c / dy > *lo) *lo = c / dy;
+  }
+  else if(c < 0.0F){
+    *lo = *hi + 1.0F;
+  }
+}
+
+/* Ties on a shared edge go to one side only: the test flips with the
+   direction of the edge, and neighbours walk it in opposite directions */
+static int gl2psRasterOwnsEdge(GLfloat ax, GLfloat ay, GLfloat bx, GLfloat by)
+{
+  GLfloat dx = bx - ax, dy = by - ay;
+  return (dy > 0.0F || (dy == 0.0F && dx < 0.0F));
+}
+
+/* Records that front is in front of behind, once for each pair: the pairs
+   of one triangle behind are recorded together, so a stamp per triangle
+   in front finds the repeats.  A list that cannot grow keeps the pairs it
+   has, and the order is taken from those. */
+static void gl2psRasterAddPair(GLint behind, GLint front)
+{
+  GL2PSraster *r = gl2psRaster;
+  GLint *p;
+  int max;
+
+  if(r->stamp[front] == behind) return;
+  if(r->npairs == r->maxpairs){
+    if(r->maxpairs > (INT_MAX - 1024) / 4) return;
+    max = 2 * r->maxpairs + 1024;
+    p = (GLint*)realloc(r->pairs, 2 * (size_t)max * sizeof(GLint));
+    if(!p) return;
+    r->pairs = p;
+    r->maxpairs = max;
+  }
+  r->stamp[front] = behind;
+  r->pairs[2 * r->npairs] = behind;
+  r->pairs[2 * r->npairs + 1] = front;
+  r->npairs++;
+}
+
+/* Scan converts triangle idx and applies mode to each sample it covers;
+   returns 1 when mode took any */
+static int gl2psRasterTriangle(GL2PSprimitive *prim, GLint idx, int mode)
+{
+  GL2PSraster *r = gl2psRaster;
+  GLfloat x[3], y[3], z[3], area, px, py, w0, w1, w2, zs;
+  GLfloat dzdx, dzdy, minx, maxx, miny, maxy, lo, hi;
+  int i, j, k, imin, imax, jmin, jmax, own0, own1, own2, found = 0;
+  int i0, i1;
+  GLint front;
+
+  gl2psRasterToSample(&prim->verts[0], &x[0], &y[0]);
+  gl2psRasterToSample(&prim->verts[1], &x[1], &y[1]);
+  gl2psRasterToSample(&prim->verts[2], &x[2], &y[2]);
+  z[0] = prim->verts[0].xyz[2];
+  z[1] = prim->verts[1].xyz[2];
+  z[2] = prim->verts[2].xyz[2];
+
+  area = gl2psRasterEdge(x[0], y[0], x[1], y[1], x[2], y[2]);
+  if(area < 0.0F){
+    /* make it counterclockwise */
+    px = x[1]; x[1] = x[2]; x[2] = px;
+    py = y[1]; y[1] = y[2]; y[2] = py;
+    zs = z[1]; z[1] = z[2]; z[2] = zs;
+    area = -area;
+  }
+  if(area <= 0.0F) return 0;
+
+  dzdx = ((y[1] - y[2]) * z[0] + (y[2] - y[0]) * z[1] +
+          (y[0] - y[1]) * z[2]) / area;
+  dzdy = ((x[2] - x[1]) * z[0] + (x[0] - x[2]) * z[1] +
+          (x[1] - x[0]) * z[2]) / area;
+  r->slope[idx] = (GLfloat)(fabs(dzdx) + fabs(dzdy));
+
+  minx = x[0]; maxx = x[0]; miny = y[0]; maxy = y[0];
+  for(k = 1; k < 3; k++){
+    if(x[k] < minx) minx = x[k];
+    if(x[k] > maxx) maxx = x[k];
+    if(y[k] < miny) miny = y[k];
+    if(y[k] > maxy) maxy = y[k];
+  }
+  if(minx < -1.0F) minx = -1.0F;
+  if(miny < -1.0F) miny = -1.0F;
+  if(maxx > r->w + 1.0F) maxx = r->w + 1.0F;
+  if(maxy > r->h + 1.0F) maxy = r->h + 1.0F;
+  /* samples sit at i + 0.5 */
+  imin = (int)ceil(minx - 0.5F); imax = (int)floor(maxx - 0.5F);
+  jmin = (int)ceil(miny - 0.5F); jmax = (int)floor(maxy - 0.5F);
+  if(imin < 0) imin = 0;
+  if(jmin < 0) jmin = 0;
+  if(imax > r->w - 1) imax = r->w - 1;
+  if(jmax > r->h - 1) jmax = r->h - 1;
+
+  own0 = gl2psRasterOwnsEdge(x[1], y[1], x[2], y[2]);
+  own1 = gl2psRasterOwnsEdge(x[2], y[2], x[0], y[0]);
+  own2 = gl2psRasterOwnsEdge(x[0], y[0], x[1], y[1]);
+
+  for(j = jmin; j <= jmax; j++){
+    py = (GLfloat)j + 0.5F;
+    /* the samples of the row between the three edges, and one more each
+       side for rounding: the tests below decide each */
+    lo = (GLfloat)imin + 0.5F;
+    hi = (GLfloat)imax + 0.5F;
+    gl2psRasterSpan(x[1], y[1], x[2], y[2], py, &lo, &hi);
+    gl2psRasterSpan(x[2], y[2], x[0], y[0], py, &lo, &hi);
+    gl2psRasterSpan(x[0], y[0], x[1], y[1], py, &lo, &hi);
+    if(lo > hi + 1.0F) continue;
+    i0 = (int)ceil(lo - 0.5F) - 1;
+    i1 = (int)floor(hi - 0.5F) + 1;
+    if(i0 < imin) i0 = imin;
+    if(i1 > imax) i1 = imax;
+    for(i = i0; i <= i1; i++){
+      px = (GLfloat)i + 0.5F;
+      w0 = gl2psRasterEdge(x[1], y[1], x[2], y[2], px, py);
+      if(w0 < 0.0F || (w0 == 0.0F && !own0)) continue;
+      w1 = gl2psRasterEdge(x[2], y[2], x[0], y[0], px, py);
+      if(w1 < 0.0F || (w1 == 0.0F && !own1)) continue;
+      w2 = gl2psRasterEdge(x[0], y[0], x[1], y[1], px, py);
+      if(w2 < 0.0F || (w2 == 0.0F && !own2)) continue;
+      zs = (w0 * z[0] + w1 * z[1] + w2 * z[2]) / area;
+      k = j * r->w + i;
+      switch(mode){
+      case GL2PS_RASTER_WRITE :
+        r->covered[idx]++;
+        if(zs < r->depth[k]){
+          r->depth[k] = zs;
+          r->id[k] = idx;
+        }
+        break;
+      case GL2PS_RASTER_FOOTPRINT :
+        front = r->id[k];
+        if(front >= 0 && front != idx)
+          gl2psRasterAddPair(idx, front);
+        break;
+      }
+      found = 1;
+    }
+  }
+  return found;
+}
+
+/* 1 when a point at sample position (x, y) and depth z is not hidden */
+static int gl2psRasterPointVisible(GLfloat x, GLfloat y, GLfloat z)
+{
+  GL2PSraster *r = gl2psRaster;
+  int k;
+  GLint front;
+
+  if(!(x >= 0.0F && y >= 0.0F && x < r->w && y < r->h)) return 1;
+  k = (int)y * r->w + (int)x;
+  front = r->id[k];
+  if(front < 0) return 1;
+  return (z <= r->depth[k] + GL2PS_RASTER_SLOPE_TOL * r->slope[front] +
+          GL2PS_RASTER_CONST_TOL);
+}
+
+/* 1 when the centroid of a triangle, at depth z, is not hidden: the test
+   of a triangle too small to hold a sample */
+static int gl2psRasterCentroidVisible(GL2PSprimitive *prim, GLfloat z)
+{
+  GLfloat x, y;
+
+  x = (prim->verts[0].xyz[0] + prim->verts[1].xyz[0] +
+       prim->verts[2].xyz[0]) / 3.0F;
+  y = (prim->verts[0].xyz[1] + prim->verts[1].xyz[1] +
+       prim->verts[2].xyz[1]) / 3.0F;
+  return gl2psRasterPointVisible((x - gl2psRaster->x0) * gl2psRaster->scale,
+                                 (y - gl2psRaster->y0) * gl2psRaster->scale, z);
+}
+
+static GLfloat gl2psRasterMeanDepth(GL2PSprimitive *prim)
+{
+  GLfloat z = 0.0F;
+  int i;
+
+  for(i = 0; i < prim->numverts; i++)
+    z += prim->verts[i].xyz[2];
+  return z / (GLfloat)prim->numverts;
+}
+
+static int gl2psRasterIsOpaque(GL2PSprimitive *prim)
+{
+  int i;
+
+  for(i = 0; i < prim->numverts; i++)
+    if(prim->verts[i].rgba[3] < 1.0F) return 0;
+  return 1;
+}
+
+/* Max-heap of triangle indices on mean depth: the farthest comes first */
+static void gl2psRasterHeapPush(GLint *heap, int *n, GLint v, const GLfloat *z)
+{
+  int c = (*n)++, p;
+  GLint tmp;
+
+  heap[c] = v;
+  while(c > 0){
+    p = (c - 1) / 2;
+    if(z[heap[p]] >= z[heap[c]]) break;
+    tmp = heap[p]; heap[p] = heap[c]; heap[c] = tmp;
+    c = p;
+  }
+}
+
+static GLint gl2psRasterHeapPop(GLint *heap, int *n, const GLfloat *z)
+{
+  GLint top = heap[0], tmp;
+  int p = 0, c;
+
+  heap[0] = heap[--(*n)];
+  for(;;){
+    c = 2 * p + 1;
+    if(c >= *n) break;
+    if(c + 1 < *n && z[heap[c + 1]] > z[heap[c]]) c++;
+    if(z[heap[p]] >= z[heap[c]]) break;
+    tmp = heap[p]; heap[p] = heap[c]; heap[c] = tmp;
+    p = c;
+  }
+  return top;
+}
+
+static int gl2psRasterComparePairs(const void *a, const void *b)
+{
+  const GLint *p = (const GLint*)a, *q = (const GLint*)b;
+
+  if(p[0] < q[0]) return -1;
+  if(p[0] > q[0]) return 1;
+  if(p[1] < q[1]) return -1;
+  if(p[1] > q[1]) return 1;
+  return 0;
+}
+
+static const GLfloat *gl2psRasterSortDepth = NULL;
+
+static int gl2psRasterCompareFarFirst(const void *a, const void *b)
+{
+  GLint p = *(const GLint*)a, q = *(const GLint*)b;
+
+  if(gl2psRasterSortDepth[p] > gl2psRasterSortDepth[q]) return -1;
+  if(gl2psRasterSortDepth[p] < gl2psRasterSortDepth[q]) return 1;
+  if(p < q) return -1;
+  return 1;
+}
+
+/* Orders the opaque triangles in tris (n of them) so each comes before
+   every triangle seen in front of it; on a cycle the farthest one left
+   goes first.  Writes the order to out. */
+static void gl2psRasterOrder(GLint *tris, int n, GLint nprims,
+                             const GLfloat *zmean, GLint *out)
+{
+  GL2PSraster *r = gl2psRaster;
+  GLint *start, *indeg, *heap, *byfar, v, w;
+  char *done;
+  int i, k, nheap = 0, nout = 0, far = 0, nuniq = 0;
+
+  r->npairs = 0;
+  for(i = 0; i < n; i++)
+    gl2psRasterTriangle(*(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives,
+                                                            tris[i]),
+                        tris[i], GL2PS_RASTER_FOOTPRINT);
+
+  qsort(r->pairs, r->npairs, 2 * sizeof(GLint), gl2psRasterComparePairs);
+  for(i = 0; i < r->npairs; i++){
+    if(nuniq > 0 && r->pairs[2 * i] == r->pairs[2 * nuniq - 2] &&
+       r->pairs[2 * i + 1] == r->pairs[2 * nuniq - 1])
+      continue;
+    r->pairs[2 * nuniq] = r->pairs[2 * i];
+    r->pairs[2 * nuniq + 1] = r->pairs[2 * i + 1];
+    nuniq++;
+  }
+
+  start = (GLint*)gl2psMalloc(((size_t)nprims + 1) * sizeof(GLint));
+  indeg = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+  heap = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  byfar = (GLint*)gl2psMalloc(((size_t)n + 1) * sizeof(GLint));
+  done = (char*)gl2psMalloc((size_t)nprims + 1);
+  for(i = 0; i <= nprims; i++) start[i] = 0;
+  for(i = 0; i < nprims; i++){ indeg[i] = 0; done[i] = 0; }
+  for(i = 0; i < nuniq; i++){
+    start[r->pairs[2 * i] + 1]++;
+    indeg[r->pairs[2 * i + 1]]++;
+  }
+  for(i = 0; i < nprims; i++) start[i + 1] += start[i];
+
+  for(i = 0; i < n; i++) byfar[i] = tris[i];
+  gl2psRasterSortDepth = zmean;
+  qsort(byfar, n, sizeof(GLint), gl2psRasterCompareFarFirst);
+
+  for(i = 0; i < n; i++)
+    if(indeg[tris[i]] == 0) gl2psRasterHeapPush(heap, &nheap, tris[i], zmean);
+
+  while(nout < n){
+    if(nheap > 0){
+      v = gl2psRasterHeapPop(heap, &nheap, zmean);
+      if(done[v]) continue;
+    }
+    else{
+      while(done[byfar[far]]) far++;
+      v = byfar[far];
+    }
+    done[v] = 1;
+    out[nout++] = v;
+    for(k = start[v]; k < start[v + 1]; k++){
+      w = r->pairs[2 * k + 1];
+      if(--indeg[w] == 0 && !done[w])
+        gl2psRasterHeapPush(heap, &nheap, w, zmean);
+    }
+  }
+
+  gl2psFree(start);
+  gl2psFree(indeg);
+  gl2psFree(heap);
+  gl2psFree(byfar);
+  gl2psFree(done);
+}
+
+static void gl2psRasterFree(void)
+{
+  if(!gl2psRaster) return;
+  gl2psFree(gl2psRaster->depth);
+  gl2psFree(gl2psRaster->id);
+  gl2psFree(gl2psRaster->slope);
+  gl2psFree(gl2psRaster->covered);
+  gl2psFree(gl2psRaster->stamp);
+  gl2psFree(gl2psRaster->pairs);
+  gl2psFree(gl2psRaster);
+  gl2psRaster = NULL;
+}
+
+/* 1 when every coordinate of a primitive is a finite number */
+static int gl2psRasterFinite(GL2PSprimitive *prim)
+{
+  int i, c;
+
+  for(i = 0; i < prim->numverts; i++)
+    for(c = 0; c < 3; c++)
+      if(!(prim->verts[i].xyz[c] - prim->verts[i].xyz[c] == 0.0F)) return 0;
+  return 1;
+}
+
+/* Prepares the primitive list for the sort: a quadrangle, which only
+   comes from gl2psAddPolyPrimitive, becomes two triangles, as the BSP
+   sort takes it, and a primitive with a coordinate that is not a finite
+   number, which only comes from there too, is dropped */
+static void gl2psRasterPrepare(void)
+{
+  GL2PSlist *list;
+  GL2PSprimitive *prim;
+  GLint i, n = gl2psListNbr(gl2ps->primitives);
+
+  list = gl2psListCreate(n + 100, 500, sizeof(GL2PSprimitive*));
+  for(i = 0; i < n; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+    if(!gl2psRasterFinite(prim)){
+      gl2psFreePrimitive(&prim);
+      continue;
+    }
+    gl2psAddPrimitiveInList(prim, list);
+  }
+  gl2psListDelete(gl2ps->primitives);
+  gl2ps->primitives = list;
+}
+
+/* Replaces the primitive list with its visible part, in drawing order.
+   Returns GL_FALSE, with the list untouched, when the buffers cannot be
+   allocated. */
+static GLboolean gl2psRasterSort(void)
+{
+  GL2PSraster *r;
+  GL2PSlist *sorted, *others;
+  GL2PSprimitive *prim;
+  GLint nprims, *opaque, *transp, *order, i, k;
+  GLint nopaque = 0, ntransp = 0;
+  GLfloat *zmean, vw, vh, scale;
+  char *keep;
+  size_t nsamples;
+
+  nprims = gl2psListNbr(gl2ps->primitives);
+  if(!nprims) return GL_TRUE;
+
+  vw = (GLfloat)gl2ps->viewport[2];
+  vh = (GLfloat)gl2ps->viewport[3];
+  /* a tight bounding box holds the corners of the box */
+  if(gl2ps->options & GL2PS_TIGHT_BOUNDING_BOX){
+    vw -= (GLfloat)gl2ps->viewport[0];
+    vh -= (GLfloat)gl2ps->viewport[1];
+  }
+  if(!(vw > 0.0F && vh > 0.0F)) return GL_FALSE;
+  scale = (GLfloat)sqrt((GLfloat)GL2PS_RASTER_MAX_SAMPLES / (vw * vh));
+  if(scale > GL2PS_RASTER_MAX_SCALE) scale = GL2PS_RASTER_MAX_SCALE;
+
+  r = (GL2PSraster*)gl2psMalloc(sizeof(GL2PSraster));
+  if(!r) return GL_FALSE;
+  gl2psRaster = r;
+  r->scale = scale;
+  r->x0 = (GLfloat)gl2ps->viewport[0];
+  r->y0 = (GLfloat)gl2ps->viewport[1];
+  r->w = (int)ceil(vw * scale);
+  r->h = (int)ceil(vh * scale);
+  nsamples = (size_t)r->w * (size_t)r->h;
+  r->depth = (GLfloat*)gl2psMalloc(nsamples * sizeof(GLfloat));
+  r->id = (GLint*)gl2psMalloc(nsamples * sizeof(GLint));
+  r->slope = (GLfloat*)gl2psMalloc((size_t)nprims * sizeof(GLfloat));
+  r->covered = (int*)gl2psMalloc((size_t)nprims * sizeof(int));
+  r->stamp = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+  r->pairs = NULL;
+  r->npairs = r->maxpairs = 0;
+  if(!r->depth || !r->id || !r->slope || !r->covered || !r->stamp){
+    gl2psRasterFree();
+    return GL_FALSE;
+  }
+  for(k = 0; k < (GLint)nsamples; k++){
+    r->depth[k] = FLT_MAX;
+    r->id[k] = -1;
+  }
+
+  zmean = (GLfloat*)gl2psMalloc((size_t)nprims * sizeof(GLfloat));
+  keep = (char*)gl2psMalloc((size_t)nprims);
+  opaque = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+  transp = (GLint*)gl2psMalloc((size_t)nprims * sizeof(GLint));
+  if(!zmean || !keep || !opaque || !transp){
+    gl2psFree(zmean);
+    gl2psFree(keep);
+    gl2psFree(opaque);
+    gl2psFree(transp);
+    gl2psRasterFree();
+    return GL_FALSE;
+  }
+
+  /* opaque triangles into the buffer */
+  for(i = 0; i < nprims; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+    zmean[i] = gl2psRasterMeanDepth(prim);
+    keep[i] = 0;
+    r->slope[i] = 0.0F;
+    r->stamp[i] = -1;
+    r->covered[i] = 0;
+    if(prim->type == GL2PS_TRIANGLE && gl2psRasterIsOpaque(prim))
+      gl2psRasterTriangle(prim, i, GL2PS_RASTER_WRITE);
+  }
+
+  /* an opaque triangle is visible where it won a sample; one too small
+     to hold a sample is kept when its centroid passes the depth test */
+  for(k = 0; k < (GLint)nsamples; k++)
+    if(r->id[k] >= 0) keep[r->id[k]] = 1;
+  for(i = 0; i < nprims; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+    if(prim->type != GL2PS_TRIANGLE) continue;
+    if(gl2psRasterIsOpaque(prim)){
+      if(!keep[i] && r->covered[i] == 0)
+        keep[i] = (char)gl2psRasterCentroidVisible(prim, zmean[i]);
+      if(keep[i]) opaque[nopaque++] = i;
+    }
+    else{
+      keep[i] = 1;
+      transp[ntransp++] = i;
+    }
+  }
+
+  order = (GLint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLint));
+  gl2psRasterOrder(opaque, nopaque, nprims, zmean, order);
+
+  /* the primitives other than triangles */
+  others = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
+  for(i = 0; i < nprims; i++){
+    prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
+    if(prim->type != GL2PS_TRIANGLE){
+      keep[i] = 1;
+      gl2psListAdd(others, &prim);
+    }
+  }
+
+  /* the opaque triangles, the transparent ones in the order they came,
+     then everything else */
+  sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
+                           sizeof(GL2PSprimitive*));
+  for(i = 0; i < nopaque; i++)
+    gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
+  for(i = 0; i < ntransp; i++)
+    gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, transp[i]));
+  for(i = 0; i < gl2psListNbr(others); i++)
+    gl2psListAdd(sorted, gl2psListPointer(others, i));
+  gl2psListDelete(others);
+
+  for(i = 0; i < nprims; i++)
+    if(!keep[i]) gl2psFreePrimitive(gl2psListPointer(gl2ps->primitives, i));
+
+  gl2psListDelete(gl2ps->primitives);
+  gl2ps->primitives = sorted;
+
+  gl2psFree(zmean);
+  gl2psFree(keep);
+  gl2psFree(opaque);
+  gl2psFree(transp);
+  gl2psFree(order);
+  gl2psRasterFree();
+  return GL_TRUE;
+}
+
 static void gl2psComputeTightBoundingBox(void *data)
 {
   GL2PSprimitive *prim;
@@ -5998,6 +6561,16 @@ static GLint gl2psPrintPrimitives(void)
     gl2psListAction(gl2ps->primitives, gl2psbackends[gl2ps->format]->printPrimitive);
     gl2psListAction(gl2ps->primitives, gl2psFreePrimitive);
     /* reset the primitive list, waiting for the next viewport */
+    gl2psListReset(gl2ps->primitives);
+    break;
+  case GL2PS_RASTER_SORT :
+    gl2psRasterPrepare();
+    if(!gl2psRasterSort()){
+      gl2psMsg(GL2PS_WARNING, "Raster sort buffers unavailable, primitives "
+               "left unsorted");
+    }
+    gl2psListAction(gl2ps->primitives, gl2psbackends[gl2ps->format]->printPrimitive);
+    gl2psListAction(gl2ps->primitives, gl2psFreePrimitive);
     gl2psListReset(gl2ps->primitives);
     break;
   case GL2PS_SIMPLE_SORT :
@@ -6106,6 +6679,7 @@ GL2PSDLL_API GLint gl2psBeginPage(const char *title, const char *producer,
   case GL2PS_NO_SORT :
   case GL2PS_SIMPLE_SORT :
   case GL2PS_BSP_SORT :
+  case GL2PS_RASTER_SORT :
     gl2ps->sort = sort;
     break;
   default :
@@ -6322,6 +6896,7 @@ GL2PSDLL_API GLint gl2psSorting(GLint mode)
   case GL2PS_NO_SORT :
   case GL2PS_SIMPLE_SORT :
   case GL2PS_BSP_SORT :
+  case GL2PS_RASTER_SORT :
     gl2ps->sort = mode;
     res = GL2PS_SUCCESS;
     break;

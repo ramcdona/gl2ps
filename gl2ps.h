@@ -110,6 +110,7 @@
 #define GL2PS_NO_SORT     1
 #define GL2PS_SIMPLE_SORT 2
 #define GL2PS_BSP_SORT    3
+#define GL2PS_RASTER_SORT 4
 
 /* Message levels and error codes */
 
