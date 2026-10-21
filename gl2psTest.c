@@ -64,6 +64,7 @@ static GLboolean display_multi = GL_TRUE;
 static GLboolean blend = GL_FALSE;
 static GLboolean teapot = GL_FALSE;
 static GLboolean wireframe = GL_FALSE;
+static GLboolean lighting = GL_TRUE;
 static const char *pixmap[] = {
   "****************************************************************",
   "*..............................................................*",
@@ -228,7 +229,7 @@ void objects(void)
   int pass, npass = 1;
 
   glPushMatrix();
-  glEnable(GL_LIGHTING);
+  if(lighting) glEnable(GL_LIGHTING);
   glRotatef(rotation, 2., 0., 1.);
   glColor4d(0.2, 0.2, 0.9, 0.2);
   if(wireframe){
@@ -296,7 +297,7 @@ void printstring(const char *string, float angle)
 
 void text(void)
 {
-  double x = -1.25, y = -0.33, dy = 0.12;
+  double x = -1.25, y = -0.33, dy = 0.11;
 
   glColor3f(1., 1., 0.);
 
@@ -314,6 +315,9 @@ void text(void)
   y -= dy;
   glRasterPos2d(x, y);
   printstring("  w: to draw the wireframe of the teapot or torus", 0.);
+  y -= dy;
+  glRasterPos2d(x, y);
+  printstring("  l: to light the teapot or torus, or draw it in one color", 0.);
   y -= dy;
   glRasterPos2d(x, y);
   printstring("  v: to alternate between single and multiple viewport modes", 0.);
@@ -616,6 +620,10 @@ void keyboard(unsigned char key, int x, int y)
     break;
   case 'w':
     wireframe = !wireframe;
+    display();
+    break;
+  case 'l':
+    lighting = !lighting;
     display();
     break;
   case 'v':
