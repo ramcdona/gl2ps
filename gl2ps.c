@@ -464,6 +464,13 @@ static long gl2psFixed(GLfloat v)
   return (long)floor(100.0 * (double)v + 0.5);
 }
 
+/* A coordinate of a line, in hundredths but rounded to tenths: lines
+   leave no cracks, so they do not need the precision of triangles */
+static long gl2psStrokeFixed(GLfloat v)
+{
+  return 10 * (long)floor(10.0 * (double)v + 0.5);
+}
+
 /* Prints a number of hundredths, with a separator from a number before
    unless it follows a command, or in SVG is negative, where the sign
    separates it; returns the number of bytes written */
@@ -5364,9 +5371,9 @@ static void gl2psEndSVGLine(void)
 {
   int i;
   if(gl2ps->lastvertex.rgba[0] >= 0.){
-    gl2psPrintPair(gl2psFixed(gl2ps->lastvertex.xyz[0]),
-                      gl2psFixed(gl2ps->viewport[3] -
-                                    gl2ps->lastvertex.xyz[1]), 0);
+    gl2psPrintPair(gl2psStrokeFixed(gl2ps->lastvertex.xyz[0]),
+                      gl2psStrokeFixed(gl2ps->viewport[3] -
+                                          gl2ps->lastvertex.xyz[1]), 0);
     gl2psPrintf("\"/>\n");
     for(i = 0; i < 3; i++)
       gl2ps->lastvertex.xyz[i] = -1.;
@@ -5507,10 +5514,12 @@ static void gl2psPrintSVGPrimitive(void *data)
       if(rgba[0][3] < 1.0F) gl2psPrintf("stroke-opacity=\"%g\" ", rgba[0][3]);
       gl2psPrintSVGDash(prim->pattern, prim->factor);
       gl2psPrintf("points=\"");
-      gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 1);
+      gl2psPrintPair(gl2psStrokeFixed(xyz[0][0]),
+                        gl2psStrokeFixed(xyz[0][1]), 1);
     }
     else{
-      gl2psPrintPair(gl2psFixed(xyz[0][0]), gl2psFixed(xyz[0][1]), 0);
+      gl2psPrintPair(gl2psStrokeFixed(xyz[0][0]),
+                        gl2psStrokeFixed(xyz[0][1]), 0);
     }
     break;
   case GL2PS_TRIANGLE :
