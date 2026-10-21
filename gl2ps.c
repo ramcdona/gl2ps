@@ -1736,7 +1736,10 @@ static void gl2psRescaleAndOffset(void)
     for(j = 0; j < prim->numverts; j++){
       prim->verts[j].xyz[2] = (prim->verts[j].xyz[2] - minZ) * scaleZ;
     }
-    if((gl2ps->options & GL2PS_SIMPLE_LINE_OFFSET) &&
+    if(gl2ps->sort == GL2PS_RASTER_SORT){
+      /* the raster sort has its own depth tolerance */
+    }
+    else if((gl2ps->options & GL2PS_SIMPLE_LINE_OFFSET) &&
        (prim->type == GL2PS_LINE)){
       if(gl2ps->sort == GL2PS_SIMPLE_SORT){
         prim->verts[0].xyz[2] -= GL2PS_ZOFFSET_LARGE;
@@ -5945,6 +5948,8 @@ static GL2PSbackend *gl2psbackends[] = {
  * front and is drawn later; a topological sort of these pairs gives a
  * painter's order.
  *
+ * Lines and points are cut to the runs that pass the depth test.
+ *
  *********************************************************************/
 
 /* Size of the visibility buffer: at most this many samples, and at
@@ -6168,6 +6173,74 @@ static int gl2psRasterCentroidVisible(GL2PSprimitive *prim, GLfloat z)
                                  (y - gl2psRaster->y0) * gl2psRaster->scale, z);
 }
 
+static GL2PSprimitive *gl2psRasterSubLine(GL2PSprimitive *prim, GLfloat t0,
+                                          GLfloat t1)
+{
+  GL2PSprimitive *sub = gl2psCopyPrimitive(prim);
+  GLfloat d;
+  int c;
+
+  for(c = 0; c < 3; c++){
+    d = prim->verts[1].xyz[c] - prim->verts[0].xyz[c];
+    sub->verts[0].xyz[c] = prim->verts[0].xyz[c] + t0 * d;
+    sub->verts[1].xyz[c] = prim->verts[0].xyz[c] + t1 * d;
+  }
+  for(c = 0; c < 4; c++){
+    d = prim->verts[1].rgba[c] - prim->verts[0].rgba[c];
+    sub->verts[0].rgba[c] = prim->verts[0].rgba[c] + t0 * d;
+    sub->verts[1].rgba[c] = prim->verts[0].rgba[c] + t1 * d;
+  }
+  return sub;
+}
+
+/* Adds to seen the runs of a line that pass the depth test */
+static void gl2psRasterClipLine(GL2PSprimitive *prim, GL2PSlist *seen)
+{
+  GLfloat x0, y0, x1, y1, x, y, len, t, z;
+  int n, k, start = -1, state, runstate = 0;
+  GL2PSprimitive *sub;
+
+  gl2psRasterToSample(&prim->verts[0], &x0, &y0);
+  gl2psRasterToSample(&prim->verts[1], &x1, &y1);
+  len = (GLfloat)fabs(x1 - x0);
+  if(fabs(y1 - y0) > len) len = (GLfloat)fabs(y1 - y0);
+  /* a line much longer than the raster is mostly outside it */
+  if(len > 4.0F * (gl2psRaster->w + gl2psRaster->h))
+    len = 4.0F * (gl2psRaster->w + gl2psRaster->h);
+  n = (int)ceil(len);
+  if(n < 1) n = 1;
+
+  /* state 0 hidden, 1 seen */
+  for(k = 0; k <= n; k++){
+    state = 0;
+    if(k < n){
+      t = ((GLfloat)k + 0.5F) / (GLfloat)n;
+      z = prim->verts[0].xyz[2] +
+        t * (prim->verts[1].xyz[2] - prim->verts[0].xyz[2]);
+      x = x0 + t * (x1 - x0);
+      y = y0 + t * (y1 - y0);
+      if(gl2psRasterPointVisible(x, y, z)){
+        state = 1;
+      }
+    }
+    if(start >= 0 && state != runstate){
+      if(start == 0 && k == n){
+        sub = gl2psCopyPrimitive(prim);
+      }
+      else{
+        sub = gl2psRasterSubLine(prim, (GLfloat)start / (GLfloat)n,
+                                 (GLfloat)k / (GLfloat)n);
+      }
+      gl2psListAdd(seen, &sub);
+      start = -1;
+    }
+    if(state && start < 0){
+      start = k;
+      runstate = state;
+    }
+  }
+}
+
 static GLfloat gl2psRasterMeanDepth(GL2PSprimitive *prim)
 {
   GLfloat z = 0.0F;
@@ -6367,11 +6440,11 @@ static void gl2psRasterPrepare(void)
 static GLboolean gl2psRasterSort(void)
 {
   GL2PSraster *r;
-  GL2PSlist *sorted, *others;
+  GL2PSlist *lines, *sorted, *others;
   GL2PSprimitive *prim;
   GLint nprims, *opaque, *transp, *order, i, k;
   GLint nopaque = 0, ntransp = 0;
-  GLfloat *zmean, vw, vh, scale;
+  GLfloat *zmean, vw, vh, scale, x, y;
   char *keep;
   size_t nsamples;
 
@@ -6460,24 +6533,38 @@ static GLboolean gl2psRasterSort(void)
   order = (GLint*)gl2psMalloc(((size_t)nopaque + 1) * sizeof(GLint));
   gl2psRasterOrder(opaque, nopaque, nprims, zmean, order);
 
-  /* the primitives other than triangles */
+  /* lines cut to what is seen, the points that are seen, and the other
+     primitives */
+  lines = gl2psListCreate(500, 500, sizeof(GL2PSprimitive*));
   others = gl2psListCreate(100, 100, sizeof(GL2PSprimitive*));
   for(i = 0; i < nprims; i++){
     prim = *(GL2PSprimitive**)gl2psListPointer(gl2ps->primitives, i);
-    if(prim->type != GL2PS_TRIANGLE){
+    if(prim->type == GL2PS_LINE){
+      gl2psRasterClipLine(prim, lines);
+    }
+    else if(prim->type == GL2PS_POINT){
+      gl2psRasterToSample(&prim->verts[0], &x, &y);
+      if(gl2psRasterPointVisible(x, y, prim->verts[0].xyz[2])){
+        keep[i] = 1;
+        gl2psListAdd(others, &prim);
+      }
+    }
+    else if(prim->type != GL2PS_TRIANGLE){
       keep[i] = 1;
       gl2psListAdd(others, &prim);
     }
   }
 
   /* the opaque triangles, the transparent ones in the order they came,
-     then everything else */
+     the lines, then everything else */
   sorted = gl2psListCreate(nopaque + ntransp + 500, 500,
                            sizeof(GL2PSprimitive*));
   for(i = 0; i < nopaque; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, order[i]));
   for(i = 0; i < ntransp; i++)
     gl2psListAdd(sorted, gl2psListPointer(gl2ps->primitives, transp[i]));
+  for(i = 0; i < gl2psListNbr(lines); i++)
+    gl2psListAdd(sorted, gl2psListPointer(lines, i));
   for(i = 0; i < gl2psListNbr(others); i++)
     gl2psListAdd(sorted, gl2psListPointer(others, i));
   gl2psListDelete(others);
@@ -6486,6 +6573,7 @@ static GLboolean gl2psRasterSort(void)
     if(!keep[i]) gl2psFreePrimitive(gl2psListPointer(gl2ps->primitives, i));
 
   gl2psListDelete(gl2ps->primitives);
+  gl2psListDelete(lines);
   gl2ps->primitives = sorted;
 
   gl2psFree(zmean);

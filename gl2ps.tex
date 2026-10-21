@@ -244,6 +244,11 @@ determine the way primitives are handled:
 
   Transparent triangles are output after the opaque ones, in the order in
   which they were drawn, and the other primitives after them.
+
+  Lines and points are cut to their visible parts.
+  Lines lying on a surface are kept through a depth tolerance, so
+  \dd{GL2PS_SIMPLE_LINE_OFFSET} and \dd{GL2PS_POLYGON_OFFSET_FILL} are not
+  needed and are ignored.
 \end{description}
 
 \item[\dd{options}] Sets global plot options, chosen among (multiple options
