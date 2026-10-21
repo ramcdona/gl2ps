@@ -5937,19 +5937,23 @@ static GL2PSbackend *gl2psbackends[] = {
 static void gl2psComputeTightBoundingBox(void *data)
 {
   GL2PSprimitive *prim;
-  int i;
+  GLfloat r = 0.0F;
+  GLint lo, hi;
+  int i, k;
 
   prim = *(GL2PSprimitive**)data;
 
+  /* lines and points reach out by half their width */
+  if(prim->type == GL2PS_LINE || prim->type == GL2PS_POINT)
+    r = 0.5F * prim->width;
+
   for(i = 0; i < prim->numverts; i++){
-    if(prim->verts[i].xyz[0] < gl2ps->viewport[0])
-      gl2ps->viewport[0] = (GLint)prim->verts[i].xyz[0];
-    if(prim->verts[i].xyz[0] > gl2ps->viewport[2])
-      gl2ps->viewport[2] = (GLint)(prim->verts[i].xyz[0] + 0.5F);
-    if(prim->verts[i].xyz[1] < gl2ps->viewport[1])
-      gl2ps->viewport[1] = (GLint)prim->verts[i].xyz[1];
-    if(prim->verts[i].xyz[1] > gl2ps->viewport[3])
-      gl2ps->viewport[3] = (GLint)(prim->verts[i].xyz[1] + 0.5F);
+    for(k = 0; k < 2; k++){
+      lo = (GLint)floor(prim->verts[i].xyz[k] - r);
+      hi = (GLint)ceil(prim->verts[i].xyz[k] + r);
+      if(lo < gl2ps->viewport[k]) gl2ps->viewport[k] = lo;
+      if(hi > gl2ps->viewport[k + 2]) gl2ps->viewport[k + 2] = hi;
+    }
   }
 }
 

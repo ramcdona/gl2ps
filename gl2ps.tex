@@ -270,7 +270,8 @@ determine the way primitives are handled:
 \item[\dd{GL2PS_TIGHT_BOUNDING_BOX}] The viewport is ignored and the
   the plot is generated with a tight bounding box, i.e., a bounding
   box enclosing as tightly as possible all the OpenGL entities in the
-  scene.
+  scene, lines and points with their width, rounded outwards to whole units
+  of the viewport.
 \item[\dd{GL2PS_COMPRESS}] The output stream is compressed. For this option
   to take effect you need to compile GL2PS with \dd{HAVE_ZLIB},
   \dd{HAVE_LIBZ} or \dd{GL2PS_HAVE_ZLIB} defined, and link the executable
