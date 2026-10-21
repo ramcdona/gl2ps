@@ -225,6 +225,8 @@ void extras(void)
 
 void objects(void)
 {
+  int pass, npass = 1;
+
   glPushMatrix();
   glEnable(GL_LIGHTING);
   glRotatef(rotation, 2., 0., 1.);
@@ -235,11 +237,28 @@ void objects(void)
     glPolygonOffset(1., 1.);
     gl2psEnable(GL2PS_POLYGON_OFFSET_FILL);
   }
-  if(teapot == GL_TRUE){
-    glutSolidTeapot(0.7);
+  if(blend){
+    /* transparent object: back faces, then front faces, without writing
+       to the depth buffer */
+    glDepthMask(GL_FALSE);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+    npass = 2;
   }
-  else{
-    glutSolidTorus(0.3, 0.6, 20, 20);
+  for(pass = 0; pass < npass; pass++){
+    if(pass == 1){
+      glCullFace(GL_BACK);
+    }
+    if(teapot == GL_TRUE){
+      glutSolidTeapot(0.7);
+    }
+    else{
+      glutSolidTorus(0.3, 0.6, 20, 20);
+    }
+  }
+  if(blend){
+    glDisable(GL_CULL_FACE);
+    glDepthMask(GL_TRUE);
   }
   if(wireframe){
     glDisable(GL_POLYGON_OFFSET_FILL);
